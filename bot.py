@@ -105,7 +105,6 @@ class Database:
         ]
         for k, v in defaults:
             self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",(k,v))
-        # ادمین اصلی
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)",(ADMIN_ID,))
         self.conn.commit()
 
@@ -189,6 +188,7 @@ class Database:
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
 
+    # بررسی عضویت در کانال‌ها
     def check_membership(self,user_id):
         try:
             for username, _ in REQUIRED_CHANNELS:
@@ -199,6 +199,7 @@ class Database:
         except:
             return False
 
+    # آمار
     def get_stats(self):
         today=datetime.now().strftime('%Y-%m-%d')
         self.cursor.execute("SELECT COUNT(*),SUM(download_count) FROM users")
@@ -298,7 +299,15 @@ def download_video(url,chat_id,user_id,is_group=False):
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    bot.reply_to(message,"🎬 سلام! من ربات Ultra-Pro Downloader هستم.\n💡 میتونی منو به گروهت اضافه کنی تا لینک‌هاتون رو دانلود کنم.\nبرای شروع کافیست هر لینک ویدیویی بفرستی!")
+    welcome_text = (
+        f"🎬 سلام {message.from_user.first_name or message.from_user.username}!\n\n"
+        "من ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 هستم 🤖\n"
+        "می‌تونی منو به گروه خودت اضافه کنی یا مستقیم به من لینک بدی تا هر چیزی رو دانلود کنم!\n\n"
+        "✅ پشتیبانی از: یوتیوب، تیک‌تاک، اینستاگرام، توییتر، فیسبوک و سایر لینک‌ها\n"
+        "✅ می‌تونی هر چیزی که میخوای دانلود کنی: ویدیو، آهنگ، عکس، فایل‌ها و ...\n\n"
+        "📌 فقط کافیه لینک رو برای من بفرستی و من دانلود و برات ارسال می‌کنم."
+    )
+    bot.send_message(message.chat.id, welcome_text)
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
@@ -409,7 +418,8 @@ th{background:#667eea;color:#fff;}
 <tr>
 <td>{{ g[0] }}</td>
 <td>{{ g[1] }}</td>
-<td>{{ 'فعال' if g[4] else 'غیرفعال' }}</td>
+<td>{{ 'فعال' if g[4] else 'غیرفعال'
+%}</td>
 </tr>
 {% endfor %}
 </table>
@@ -428,6 +438,8 @@ def home():
 
 @app.route('/toggle/<status>')
 def toggle(status):
+    # فقط ادمین میتونه ربات رو روشن/خاموش کنه
+    # برای سادگی، چون وب پنل بدون احراز هویت عمومی هست، میتونید بعداً اضافه کنید
     if status in ["on","off"]:
         db.set_setting("bot_status","ON" if status=="on" else "OFF")
     return redirect('/')
@@ -444,5 +456,5 @@ if __name__=="__main__":
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
-    print("🚀 ربات Ultra-Pro Downloader آماده است")
+    print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     app.run(host="0.0.0.0", port=PORT)
