@@ -16,9 +16,7 @@ ADMIN_ID = 8226091292
 MAX_FILE_SIZE = 300*1024*1024
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
-PORT = int(os.environ.get("PORT",8080))
-
-# کانال‌های عضویت اجباری
+PORT = int(os.environ.get("PORT", 8080))
 REQUIRED_CHANNELS = [
     ("@top_topy_downloader", 3828073352),
     ("@IdTOP_TOPY", 3872568492)
@@ -35,7 +33,7 @@ def extract_urls(text):
     return re.findall(r'https?://[^\s]+', text)
 
 def detect_platform(url):
-    url=url.lower()
+    url = url.lower()
     if "youtube" in url or "youtu.be" in url:
         return "YouTube"
     if "tiktok" in url:
@@ -48,27 +46,15 @@ def detect_platform(url):
         return "Facebook"
     return "Other"
 
-def check_membership(user_id):
-    """بررسی عضویت کاربر در کانال‌ها"""
-    for _, channel_id in REQUIRED_CHANNELS:
-        try:
-            member = bot.get_chat_member(channel_id, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
-        except:
-            return False
-    return True
-
 # ================= دیتابیس =================
 class Database:
     def __init__(self):
-        self.conn=sqlite3.connect("database/bot.db",check_same_thread=False)
-        self.cursor=self.conn.cursor()
+        self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
+        self.cursor = self.conn.cursor()
         self.init_db()
         self.start_keep_alive()
 
     def init_db(self):
-        # کاربران
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS users(
             user_id INTEGER PRIMARY KEY,
@@ -81,7 +67,6 @@ class Database:
             is_admin INTEGER DEFAULT 0
         )
         """)
-        # گروه‌ها
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS groups(
             chat_id INTEGER PRIMARY KEY,
@@ -91,7 +76,6 @@ class Database:
             is_active INTEGER DEFAULT 1
         )
         """)
-        # دانلودها
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS downloads(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -105,14 +89,13 @@ class Database:
             platform TEXT
         )
         """)
-        # تنظیمات
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings(
             key TEXT PRIMARY KEY,
             value TEXT
         )
         """)
-        defaults=[
+        defaults = [
             ("bot_status","ON"),
             ("total_users","0"),
             ("total_downloads","0"),
@@ -120,7 +103,7 @@ class Database:
             ("group_mode","ON"),
             ("private_mode","ON")
         ]
-        for k,v in defaults:
+        for k, v in defaults:
             self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",(k,v))
         # ادمین اصلی
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)",(ADMIN_ID,))
@@ -135,17 +118,17 @@ class Database:
                 except:
                     self.reconnect()
                 time.sleep(60)
-        threading.Thread(target=ping,daemon=True).start()
+        threading.Thread(target=ping, daemon=True).start()
 
     def reconnect(self):
         try: self.conn.close()
         except: pass
-        self.conn=sqlite3.connect("database/bot.db",check_same_thread=False)
-        self.cursor=self.conn.cursor()
+        self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
+        self.cursor = self.conn.cursor()
 
     # کاربران
     def add_user(self,user_id,username,first_name):
-        now=datetime.now()
+        now = datetime.now()
         self.cursor.execute("SELECT * FROM users WHERE user_id=?",(user_id,))
         if self.cursor.fetchone():
             self.cursor.execute("UPDATE users SET last_use=?, username=?, first_name=? WHERE user_id=?",
@@ -160,7 +143,7 @@ class Database:
         self.conn.commit()
 
     def add_group(self,chat_id,title):
-        now=datetime.now()
+        now = datetime.now()
         self.cursor.execute("SELECT * FROM groups WHERE chat_id=?",(chat_id,))
         if self.cursor.fetchone():
             self.cursor.execute("UPDATE groups SET last_active=?, title=? WHERE chat_id=?",(now,title,chat_id))
@@ -205,6 +188,16 @@ class Database:
     def unblock_user(self,user_id):
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
+
+    def check_membership(self,user_id):
+        try:
+            for username, _ in REQUIRED_CHANNELS:
+                member = bot.get_chat_member(username,user_id)
+                if member.status not in ['member','administrator','creator']:
+                    return False
+            return True
+        except:
+            return False
 
     def get_stats(self):
         today=datetime.now().strftime('%Y-%m-%d')
@@ -258,6 +251,9 @@ app=Flask(__name__)
 # ================= دانلود =================
 def download_video(url,chat_id,user_id,is_group=False):
     try:
+        if not db.check_membership(user_id):
+            bot.send_message(chat_id,"⛔ برای استفاده از ربات ابتدا در کانال‌های ما عضو شوید!")
+            return
         platform=detect_platform(url)
         ydl_opts={"quiet":True,"no_warnings":True,"outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s"}
         msg=bot.send_message(chat_id,f"⏳ در حال دانلود از {platform} ...")
@@ -298,29 +294,15 @@ def download_video(url,chat_id,user_id,is_group=False):
     except Exception as e:
         bot.send_message(chat_id,f"❌ خطا:\n{str(e)[:200]}")
 
-# ================= پیام خوش آمد =================
-WELCOME_MESSAGE = """
-🎬 سلام {name}!
-من ربات دانلود حرفه‌ای TOP TOPY هستم.
-می‌تونی منو به گروه‌ها و گپ‌هات اضافه کنی تا لینک‌های ویدیو یا موسیقی رو برات دانلود کنم!
-✅ ...پشتیبانی: یوتیوب، اینستاگرام، توییتر، تیک‌تاک و فیسبوک و 
-⚠️ توجه: عضویت در کانال‌های زیر اجباریه:
-{}
-""".format("\n".join([c[0] for c in REQUIRED_CHANNELS]))
-
 # ================= تلگرام =================
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    if not check_membership(message.from_user.id):
-        bot.reply_to(message,"⚠️ لطفا ابتدا در کانال‌های اجباری عضو شوید:\n" + "\n".join([c[0] for c in REQUIRED_CHANNELS]))
-        return
-    bot.reply_to(message,WELCOME_MESSAGE.format(name=message.from_user.first_name))
+    bot.reply_to(message,"🎬 سلام! من ربات Ultra-Pro Downloader هستم.\n💡 میتونی منو به گروهت اضافه کنی تا لینک‌هاتون رو دانلود کنم.\nبرای شروع کافیست هر لینک ویدیویی بفرستی!")
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id!=ADMIN_ID:
-        bot.reply_to(message,"⛔ دسترسی ندارید")
         return
     stats=db.get_stats()
     users=db.get_users(10)
@@ -349,7 +331,6 @@ def callback(call):
         db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
         bot.edit_message_text(f"وضعیت جدید: {call.data.upper()}",call.message.chat.id,call.message.message_id)
 
-# ================= پردازش پیام =================
 @bot.message_handler(func=lambda m: True,content_types=['text'])
 def handle_message(message):
     if db.get_setting("bot_status")=="OFF": return
@@ -360,15 +341,11 @@ def handle_message(message):
     urls=extract_urls(message.text)
     if not urls: return
     url=urls[0]
-    if not check_membership(message.from_user.id):
-        bot.reply_to(message,"⚠️ لطفا ابتدا در کانال‌های اجباری عضو شوید:\n" + "\n".join([c[0] for c in REQUIRED_CHANNELS]))
-        return
     bot.reply_to(message,"✅ لینک دریافت شد، شروع دانلود...")
     threading.Thread(target=download_video,args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),daemon=True).start()
 
 # ================= وب پنل حرفه‌ای =================
-HTML_TEMPLATE="""
-<!DOCTYPE html>
+HTML_TEMPLATE="""<!DOCTYPE html>
 <html dir="rtl">
 <head>
 <meta charset="utf-8">
@@ -467,5 +444,5 @@ if __name__=="__main__":
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
-    print("🚀 ربات Ultra-Pro آماده است و وب‌هوک فعال شد")
-    app.run(host="0.0.0.0",port=PORT)
+    print("🚀 ربات Ultra-Pro Downloader آماده است")
+    app.run(host="0.0.0.0", port=PORT)
