@@ -105,6 +105,7 @@ class Database:
         ]
         for k, v in defaults:
             self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",(k,v))
+        # ادمین اصلی
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)",(ADMIN_ID,))
         self.conn.commit()
 
@@ -299,6 +300,16 @@ def download_video(url,chat_id,user_id,is_group=False):
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
+    
+    # بررسی عضویت اجباری
+    if not db.check_membership(message.from_user.id):
+        bot.send_message(
+            message.chat.id,
+            "⛔ برای استفاده از ربات ابتدا باید در کانال‌های زیر عضو شوید:\n" +
+            "\n".join([f"{username}" for username, _ in REQUIRED_CHANNELS])
+        )
+        return
+
     welcome_text = (
         f"🎬 سلام {message.from_user.first_name or message.from_user.username}!\n\n"
         "من ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 هستم 🤖\n"
@@ -340,18 +351,33 @@ def callback(call):
         db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
         bot.edit_message_text(f"وضعیت جدید: {call.data.upper()}",call.message.chat.id,call.message.message_id)
 
-@bot.message_handler(func=lambda m: True,content_types=['text'])
+@bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
     if db.get_setting("bot_status")=="OFF": return
     if db.is_blocked(message.from_user.id): return
+
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
     if message.chat.type in ["group","supergroup"]:
         db.add_group(message.chat.id,message.chat.title)
-    urls=extract_urls(message.text)
+
+    # بررسی عضویت اجباری قبل از دانلود
+    if not db.check_membership(message.from_user.id):
+        bot.send_message(
+            message.chat.id,
+            "⛔ برای استفاده از ربات ابتدا باید در کانال‌های زیر عضو شوید:\n" +
+            "\n".join([f"{username}" for username, _ in REQUIRED_CHANNELS])
+        )
+        return
+
+    urls = extract_urls(message.text)
     if not urls: return
-    url=urls[0]
+    url = urls[0]
     bot.reply_to(message,"✅ لینک دریافت شد، شروع دانلود...")
-    threading.Thread(target=download_video,args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),daemon=True).start()
+    threading.Thread(
+        target=download_video,
+        args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),
+        daemon=True
+    ).start()
 
 # ================= وب پنل حرفه‌ای =================
 HTML_TEMPLATE="""<!DOCTYPE html>
@@ -387,7 +413,7 @@ th{background:#667eea;color:#fff;}
 
 <h2>آخرین کاربران</h2>
 <table>
-<tr><th>ID</th><th>نام</th><th>دانلودها</th><th>وضعیت</th></tr>
+<tr><th>ID</th><th>نام</th><th>دانلودها</th><<th>وضعیت</th></tr>
 {% for u in users %}
 <tr>
 <td>{{ u[0] }}</td>
@@ -418,8 +444,7 @@ th{background:#667eea;color:#fff;}
 <tr>
 <td>{{ g[0] }}</td>
 <td>{{ g[1] }}</td>
-<td>{{ 'فعال' if g[4] else 'غیرفعال'
-%}</td>
+<td>{{ 'فعال' if g[4] else 'غیرفعال' }}</td>
 </tr>
 {% endfor %}
 </table>
@@ -430,29 +455,28 @@ th{background:#667eea;color:#fff;}
 
 @app.route('/')
 def home():
-    stats=db.get_stats()
-    users=db.get_users(20)
-    downloads=db.get_recent_downloads(20)
-    groups=db.get_groups(20)
-    return render_template_string(HTML_TEMPLATE,stats=stats,users=users,downloads=downloads,groups=groups)
+    stats = db.get_stats()
+    users = db.get_users(20)
+    downloads = db.get_recent_downloads(20)
+    groups = db.get_groups(20)
+    return render_template_string(HTML_TEMPLATE, stats=stats, users=users, downloads=downloads, groups=groups)
 
 @app.route('/toggle/<status>')
 def toggle(status):
-    # فقط ادمین میتونه ربات رو روشن/خاموش کنه
-    # برای سادگی، چون وب پنل بدون احراز هویت عمومی هست، میتونید بعداً اضافه کنید
+    # فقط ادمین می‌تواند ربات را روشن/خاموش کند
     if status in ["on","off"]:
         db.set_setting("bot_status","ON" if status=="on" else "OFF")
     return redirect('/')
 
-@app.route('/webhook',methods=['POST'])
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    json_str=request.get_data().decode('utf-8')
-    update=telebot.types.Update.de_json(json_str)
+    json_str = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
-    return "OK",200
+    return "OK", 200
 
 # ================= اجرا =================
-if __name__=="__main__":
+if __name__ == "__main__":
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
