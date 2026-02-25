@@ -42,19 +42,16 @@ class Config:
     DEBUG = False
     
     # تنظیمات عضویت اجباری - دو کانال
-    FORCE_JOIN_ENABLED = True  # فعال کردن عضویت اجباری
+    FORCE_JOIN_ENABLED = True
     
-    # کانال اول
     FORCE_JOIN_CHANNEL_1 = "@top_topy_downloader"
-    FORCE_JOIN_CHANNEL_ID_1 = -1003828073352  # آیدی عددی کانال اول
+    FORCE_JOIN_CHANNEL_ID_1 = -1003828073352
     
-    # کانال دوم
     FORCE_JOIN_CHANNEL_2 = "@IdTOP_TOPY"
-    FORCE_JOIN_CHANNEL_ID_2 = -1003872568492  # آیدی عددی کانال دوم
+    FORCE_JOIN_CHANNEL_ID_2 = -1003872568492
     
     FORCE_JOIN_MESSAGE = "🔒 **برای استفاده از ربات، باید در کانال‌های زیر عضو شوید:**\n\n{channels}\n\nبعد از عضویت، دکمه ✅ بررسی عضویت را بزنید."
     
-    # تنظیمات محدودیت دانلود روزانه
     DAILY_LIMIT_ENABLED = False
     DAILY_LIMIT_COUNT = 5
 
@@ -68,7 +65,7 @@ os.makedirs("database", exist_ok=True)
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-# ================= دیتابیس پیشرفته =================
+# ================= دیتابیس =================
 class Database:
     def __init__(self, db_path='database/bot.db'):
         self.db_path = db_path
@@ -85,7 +82,6 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # جدول کاربران
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -106,7 +102,6 @@ class Database:
             )
             """)
             
-            # جدول آمار
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -118,7 +113,6 @@ class Database:
             )
             """)
             
-            # جدول تنظیمات
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -126,7 +120,6 @@ class Database:
             )
             """)
             
-            # جدول دانلودها
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS downloads (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -141,7 +134,6 @@ class Database:
             )
             """)
             
-            # تنظیمات پیش‌فرض
             default_settings = [
                 ('bot_status', 'ON'),
                 ('maintenance_mode', 'OFF'),
@@ -161,13 +153,12 @@ class Database:
             for key, value in default_settings:
                 cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
             
-            # تنظیم ادمین
             cursor.execute("INSERT OR IGNORE INTO users (user_id, is_admin) VALUES (?, 1)", (ADMIN_ID,))
             
             conn.commit()
             conn.close()
-            logger.info("✅ دیتابیس پیشرفته راه‌اندازی شد")
-            logger.info(f"✅ عضویت اجباری در دو کانال فعال شد: {config.FORCE_JOIN_CHANNEL_1} و {config.FORCE_JOIN_CHANNEL_2}")
+            logger.info("✅ دیتابیس راه‌اندازی شد")
+            logger.info(f"✅ عضویت اجباری در: {config.FORCE_JOIN_CHANNEL_1} و {config.FORCE_JOIN_CHANNEL_2}")
     
     def execute(self, query, params=(), fetch_one=False, fetch_all=False):
         with self.lock:
@@ -203,15 +194,12 @@ class Database:
             user = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
             
             if user:
-                # آپدیت آخرین فعالیت
                 self.execute("UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
                            (now, username, first_name, last_name, user_id))
                 
-                # ریست دانلود روزانه اگه روز جدید باشه
-                if user[10] != today:  # last_download_date
+                if user[10] != today:
                     self.execute("UPDATE users SET daily_downloads = 0, last_download_date = ? WHERE user_id = ?", (today, user_id))
             else:
-                # افزودن کاربر جدید
                 self.execute("""
                     INSERT INTO users (user_id, username, first_name, last_name, joined_date, last_active, blocked, downloads_count, is_admin, language, daily_downloads, last_download_date, joined_channel_1, joined_channel_2, warning_count)
                     VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 'fa', 0, ?, 0, 0, 0)
@@ -226,12 +214,10 @@ class Database:
             return False
     
     def check_force_join(self, user_id):
-        """بررسی عضویت اجباری در هر دو کانال"""
         enabled = self.execute("SELECT value FROM settings WHERE key = 'force_join_enabled'", fetch_one=True)
         if not enabled or enabled[0] != 'True':
             return True
         
-        # بررسی کانال اول
         channel_id_1 = self.execute("SELECT value FROM settings WHERE key = 'force_join_channel_id_1'", fetch_one=True)
         channel_1_ok = True
         if channel_id_1:
@@ -241,11 +227,9 @@ class Database:
                 channel_1_ok = status in ['member', 'administrator', 'creator']
                 if channel_1_ok:
                     self.execute("UPDATE users SET joined_channel_1 = 1 WHERE user_id = ?", (user_id,))
-            except Exception as e:
-                logger.error(f"خطا در بررسی کانال اول: {e}")
+            except:
                 channel_1_ok = False
         
-        # بررسی کانال دوم
         channel_id_2 = self.execute("SELECT value FROM settings WHERE key = 'force_join_channel_id_2'", fetch_one=True)
         channel_2_ok = True
         if channel_id_2:
@@ -255,8 +239,7 @@ class Database:
                 channel_2_ok = status in ['member', 'administrator', 'creator']
                 if channel_2_ok:
                     self.execute("UPDATE users SET joined_channel_2 = 1 WHERE user_id = ?", (user_id,))
-            except Exception as e:
-                logger.error(f"خطا در بررسی کانال دوم: {e}")
+            except:
                 channel_2_ok = False
         
         return channel_1_ok and channel_2_ok
@@ -311,40 +294,14 @@ class Database:
         except Exception as e:
             logger.error(f"خطا در update_stats: {e}")
     
-    def get_stats(self):
-        today = datetime.now().strftime('%Y-%m-%d')
-        
-        total_users = self.execute("SELECT COUNT(*) as count FROM users", fetch_one=True)
-        today_active = self.execute("SELECT COUNT(*) as count FROM users WHERE date(last_active) = date('now')", fetch_one=True)
-        blocked_users = self.execute("SELECT COUNT(*) as count FROM users WHERE blocked = 1", fetch_one=True)
-        total_downloads = self.execute("SELECT value FROM settings WHERE key = 'total_downloads'", fetch_one=True)
-        today_downloads = self.execute("SELECT total_downloads FROM stats WHERE date = ?", (today,), fetch_one=True)
-        
-        total_admins = self.execute("SELECT COUNT(*) as count FROM users WHERE is_admin = 1", fetch_one=True)
-        joined_channel_1 = self.execute("SELECT COUNT(*) as count FROM users WHERE joined_channel_1 = 1", fetch_one=True)
-        joined_channel_2 = self.execute("SELECT COUNT(*) as count FROM users WHERE joined_channel_2 = 1", fetch_one=True)
-        
-        return {
-            'total_users': total_users[0] if total_users else 0,
-            'today_active': today_active[0] if today_active else 0,
-            'blocked_users': blocked_users[0] if blocked_users else 0,
-            'total_downloads': int(total_downloads[0]) if total_downloads else 0,
-            'today_downloads': today_downloads[0] if today_downloads else 0,
-            'total_admins': total_admins[0] if total_admins else 0,
-            'joined_channel_1': joined_channel_1[0] if joined_channel_1 else 0,
-            'joined_channel_2': joined_channel_2[0] if joined_channel_2 else 0
-        }
-    
     def set_bot_status(self, status):
         self.execute("UPDATE settings SET value = ? WHERE key = 'bot_status'", (status,))
 
-# ================= ایجاد دیتابیس =================
 db = Database()
 
 # ================= صف دانلود =================
 download_queue = Queue()
 
-# ================= Worker برای دانلود =================
 def download_worker():
     while True:
         try:
@@ -453,9 +410,6 @@ def process_download_task(chat_id, user_id, url, fmt, status_message_id):
             else:
                 bot.edit_message_text("❌ فایل پیدا نشد.", chat_id, status_message_id)
     
-    except yt_dlp.utils.DownloadError as e:
-        bot.edit_message_text(f"❌ خطای دانلود: {str(e)[:100]}", chat_id, status_message_id)
-        logger.error(f"خطای دانلود: {e}")
     except Exception as e:
         bot.edit_message_text(f"❌ خطا: {str(e)[:100]}", chat_id, status_message_id)
         logger.error(f"خطای دانلود: {e}")
@@ -470,7 +424,6 @@ def start_command(message):
     
     db.add_user(user_id, username, first_name, last_name)
     
-    # بررسی عضویت اجباری در دو کانال
     if not db.check_force_join(user_id):
         channel_1 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_1'", fetch_one=True)
         channel_2 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_2'", fetch_one=True)
@@ -511,7 +464,7 @@ def check_join_callback(call):
     user_id = call.from_user.id
     
     if db.check_force_join(user_id):
-        bot.answer_callback_query(call.id, "✅ عضویت در هر دو کانال تأیید شد!")
+        bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
         bot.edit_message_text("✅ عضویت شما تأیید شد. حالا می‌تونید از ربات استفاده کنید.", call.message.chat.id, call.message.message_id)
         
         welcome_text = """
@@ -528,7 +481,7 @@ def check_join_callback(call):
         """
         bot.send_message(user_id, welcome_text, parse_mode="Markdown")
     else:
-        bot.answer_callback_query(call.id, "❌ شما هنوز در هر دو کانال عضو نشده‌اید!", show_alert=True)
+        bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
 
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
@@ -542,24 +495,16 @@ def admin_command(message):
         InlineKeyboardButton("🟢 روشن", callback_data="admin_on"),
         InlineKeyboardButton("🔴 خاموش", callback_data="admin_off"),
         InlineKeyboardButton("📊 آمار", callback_data="admin_stats"),
-        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
-        InlineKeyboardButton("🔒 بلاک/آنبلاک", callback_data="admin_block"),
-        InlineKeyboardButton("👥 کاربران", callback_data="admin_users"),
-        InlineKeyboardButton("📥 دانلودها", callback_data="admin_downloads"),
-        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset")
+        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast")
     )
     
     status_text = f"""
 👑 **پنل مدیریت**
 
-📊 **آمار سریع:**
+📊 **آمار:**
 👥 کل کاربران: {stats['total_users']}
 📥 کل دانلودها: {stats['total_downloads']}
-📊 دانلود امروز: {stats['today_downloads']}
 🔒 بلاک شده: {stats['blocked_users']}
-👑 ادمین‌ها: {stats['total_admins']}
-📢 عضو کانال اول: {stats['joined_channel_1']}
-📢 عضو کانال دوم: {stats['joined_channel_2']}
 🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
 
 لطفاً یکی از گزینه‌ها رو انتخاب کن:
@@ -578,59 +523,48 @@ def admin_callback(call):
     if action == "on":
         db.set_bot_status('ON')
         bot.answer_callback_query(call.id, "✅ ربات روشن شد")
-        bot.edit_message_text("✅ ربات با موفقیت روشن شد", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("✅ ربات روشن شد", call.message.chat.id, call.message.message_id)
     
     elif action == "off":
         db.set_bot_status('OFF')
         bot.answer_callback_query(call.id, "✅ ربات خاموش شد")
-        bot.edit_message_text("✅ ربات با موفقیت خاموش شد", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("✅ ربات خاموش شد", call.message.chat.id, call.message.message_id)
     
     elif action == "stats":
         stats = db.get_stats()
         text = f"""
 📊 **آمار کامل**
 
-👥 **کاربران:**
-• کل: {stats['total_users']}
-• فعال امروز: {stats['today_active']}
-• بلاک شده: {stats['blocked_users']}
-• ادمین‌ها: {stats['total_admins']}
-• عضو کانال اول: {stats['joined_channel_1']}
-• عضو کانال دوم: {stats['joined_channel_2']}
-
-📥 **دانلودها:**
-• کل: {stats['total_downloads']}
-• امروز: {stats['today_downloads']}
-
-🟢 **وضعیت:** {'روشن' if db.is_bot_on() else 'خاموش'}
+👥 کل کاربران: {stats['total_users']}
+📥 کل دانلودها: {stats['total_downloads']}
+🔒 بلاک شده: {stats['blocked_users']}
+🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
         """
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
     elif action == "broadcast":
-        bot.edit_message_text("📢 **پیام همگانی جدید**\n\nلطفاً متن پیام رو بفرست:", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.edit_message_text("📢 متن پیام رو بفرست:", call.message.chat.id, call.message.message_id)
         bot.register_next_step_handler(call.message, broadcast_handler)
 
 def broadcast_handler(message):
     msg_text = message.text
-    users = db.get_users(limit=1000)
+    users = db.execute("SELECT user_id, blocked FROM users", fetch_all=True)
     
-    status_msg = bot.reply_to(message, "📤 در حال ارسال پیام همگانی...")
+    status_msg = bot.reply_to(message, "📤 در حال ارسال...")
     
     sent = 0
     failed = 0
     
     for user in users:
-        user_id = user[0]
-        if not user[6]:
+        if not user[1]:
             try:
-                bot.send_message(user_id, f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
+                bot.send_message(user[0], f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
                 sent += 1
-            except Exception as e:
+            except:
                 failed += 1
-                logger.error(f"خطا در ارسال به {user_id}: {e}")
             time.sleep(0.05)
     
-    bot.edit_message_text(f"✅ **نتیجه ارسال همگانی**\n\n📤 ارسال شده: {sent}\n❌ ناموفق: {failed}", status_msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+    bot.edit_message_text(f"✅ ارسال شد: {sent}\n❌ ناموفق: {failed}", status_msg.chat.id, status_msg.message_id)
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
@@ -639,7 +573,6 @@ def handle_message(message):
     
     db.add_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name)
     
-    # بررسی عضویت اجباری در دو کانال
     if not db.check_force_join(user_id):
         channel_1 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_1'", fetch_one=True)
         channel_2 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_2'", fetch_one=True)
@@ -661,7 +594,7 @@ def handle_message(message):
         return
     
     if not url.startswith(('http://', 'https://')):
-        bot.reply_to(message, "❌ لطفاً یک لینک معتبر بفرست.")
+        bot.reply_to(message, "❌ لینک معتبر بفرست.")
         return
     
     if db.is_blocked(user_id):
@@ -680,43 +613,41 @@ def handle_message(message):
             
             markup = InlineKeyboardMarkup(row_width=2)
             markup.add(
-                InlineKeyboardButton("🎵 MP3 (صوت)", callback_data=f"dl_mp3_{url}"),
-                InlineKeyboardButton("🎬 MP4 (ویدیو)", callback_data=f"dl_mp4_{url}"),
-                InlineKeyboardButton("📥 بهترین کیفیت", callback_data=f"dl_best_{url}")
+                InlineKeyboardButton("🎵 MP3", callback_data=f"dl_mp3_{url}"),
+                InlineKeyboardButton("🎬 MP4", callback_data=f"dl_mp4_{url}"),
+                InlineKeyboardButton("📥 بهترین", callback_data=f"dl_best_{url}")
             )
             
-            bot.reply_to(message, f"🔍 **منبع:** {extractor}\n📌 **عنوان:** {title[:50]}...\n\n📥 **فرمت مورد نظر رو انتخاب کن:**", reply_markup=markup, parse_mode="Markdown")
-    except Exception as e:
+            bot.reply_to(message, f"🔍 {extractor}\n📌 {title[:50]}...", reply_markup=markup)
+    except:
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
-            InlineKeyboardButton("🎵 MP3 (صوت)", callback_data=f"dl_mp3_{url}"),
-            InlineKeyboardButton("🎬 MP4 (ویدیو)", callback_data=f"dl_mp4_{url}"),
-            InlineKeyboardButton("📥 بهترین کیفیت", callback_data=f"dl_best_{url}")
+            InlineKeyboardButton("🎵 MP3", callback_data=f"dl_mp3_{url}"),
+            InlineKeyboardButton("🎬 MP4", callback_data=f"dl_mp4_{url}")
         )
-        bot.reply_to(message, "📥 **فرمت مورد نظر رو انتخاب کن:**", reply_markup=markup, parse_mode="Markdown")
+        bot.reply_to(message, "📥 فرمت رو انتخاب کن:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('dl_'))
 def download_callback(call):
     try:
         parts = call.data.split('_', 2)
         if len(parts) < 3:
-            bot.answer_callback_query(call.id, "❌ لینک نامعتبر")
+            bot.answer_callback_query(call.id, "❌ خطا")
             return
             
         fmt = parts[1]
         url = parts[2]
         
-        status_msg = bot.send_message(call.message.chat.id, "⏳ اضافه شدن به صف دانلود...")
+        status_msg = bot.send_message(call.message.chat.id, "⏳ اضافه به صف...")
         
         task = (call.message.chat.id, call.from_user.id, url, fmt, status_msg.message_id)
         download_queue.put(task)
         
-        queue_size = download_queue.qsize()
-        bot.edit_message_text(f"✅ به صف دانلود اضافه شد\n📊 موقعیت در صف: {queue_size}", call.message.chat.id, status_msg.message_id)
-        bot.answer_callback_query(call.id, "✅ درخواست ثبت شد")
+        bot.edit_message_text(f"✅ در صف: {download_queue.qsize()}", call.message.chat.id, status_msg.message_id)
+        bot.answer_callback_query(call.id, "✅ ثبت شد")
         
     except Exception as e:
-        bot.answer_callback_query(call.id, f"❌ خطا: {str(e)[:30]}")
+        bot.answer_callback_query(call.id, f"❌ خطا")
 
 # ================= Webhook =================
 @app.route('/webhook', methods=['POST'])
@@ -728,36 +659,18 @@ def webhook():
             bot.process_new_updates([update])
             return 'OK', 200
         except Exception as e:
-            logger.error(f"خطا در پردازش webhook: {e}")
+            logger.error(f"خطا: {e}")
             return 'Error', 500
     return 'Invalid request', 403
 
 @app.route('/test', methods=['GET'])
 def test():
-    return f"Bot is running! Webhook URL: {config.WEBHOOK_URL}", 200
-
-@app.route('/health', methods=['GET'])
-def health():
-    return jsonify({
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'webhook_url': config.WEBHOOK_URL
-    }), 200
+    return "ربات فعال است!", 200
 
 @app.route('/')
 def home():
-    return """
-    <html dir="rtl">
-    <head><title>ربات دانلود</title></head>
-    <body style="font-family: Tahoma; text-align: center; padding: 50px;">
-        <h1>🤖 ربات دانلود از همه سایت‌ها</h1>
-        <p>ربات با موفقیت اجرا شد!</p>
-        <p>برای استفاده به تلگرام بروید و /start بزنید.</p>
-    </body>
-    </html>
-    """
+    return "ربات دانلود - فعال"
 
-# ================= تنظیم Webhook =================
 def setup_webhook():
     try:
         bot.remove_webhook()
@@ -765,32 +678,23 @@ def setup_webhook():
         success = bot.set_webhook(url=config.WEBHOOK_URL)
         
         if success:
-            logger.info(f"✅ Webhook تنظیم شد: {config.WEBHOOK_URL}")
+            logger.info(f"✅ Webhook تنظیم شد")
             return True
-        else:
-            logger.error("❌ خطا در تنظیم Webhook")
-            return False
+        return False
     except Exception as e:
-        logger.error(f"❌ خطا در تنظیم webhook: {e}")
+        logger.error(f"❌ خطا: {e}")
         return False
 
-# ================= راه‌اندازی =================
 def signal_handler(sig, frame):
-    logger.info("🛑 در حال خروج از برنامه...")
+    logger.info("🛑 خروج...")
     sys.exit(0)
 
 if __name__ == "__main__":
     signal.signal(signal.SIGINT, signal_handler)
     
-    logger.info("🚀 در حال راه‌اندازی ربات...")
-    logger.info(f"👤 آیدی ادمین: {ADMIN_ID}")
-    logger.info(f"🌐 Webhook URL: {config.WEBHOOK_URL}")
-    logger.info(f"📢 عضویت اجباری در: {config.FORCE_JOIN_CHANNEL_1} و {config.FORCE_JOIN_CHANNEL_2}")
+    logger.info("🚀 راه‌اندازی ربات...")
     
     if setup_webhook():
-        logger.info("✅ Webhook با موفقیت تنظیم شد")
-    else:
-        logger.warning("⚠️ خطا در تنظیم Webhook - ادامه با polling")
+        logger.info("✅ Webhook فعال شد")
     
-    logger.info(f"🚀 اجرا روی پورت {config.WEBHOOK_PORT}")
-    app.run(host=config.WEBHOOK_HOST, port=config.WEBHOOK_PORT, debug=config.DEBUG, threaded=True)
+    app.run(host='0.0.0.0', port=config.WEBHOOK_PORT, debug=False, threaded=True)
