@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 
 # ================= تنظیمات اصلی =================
 class Config:
-    # کلید AES
-    SECRET_KEY = b"16bytesecretkey!"
-    
     # توکن و ادمین - مقادیر واقعی
     BOT_TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
     ADMIN_ID = 8226091292
@@ -40,13 +37,14 @@ class Config:
     MAX_FILE_SIZE = 300 * 1024 * 1024  # 300 مگابایت
     DOWNLOAD_PATH = "downloads"
     
-    # تنظیمات وب‌هوک - در هاست واقعی تغییر بده
-    WEBHOOK_URL = "https://your-domain.com/webhook"  # برای Railway, Koyeb, و غیره
+    # تنظیمات وب‌هوک - برای Railway
+    RAILWAY_PUBLIC_DOMAIN = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'top-topy-downloader.up.railway.app')
+    WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
     WEBHOOK_HOST = "0.0.0.0"
     WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
     
-    # حالت اجرا
-    USE_WEBHOOK = False  # برای تست محلی False باشه، برای هاست True
+    # حالت اجرا - برای Railway همیشه True
+    USE_WEBHOOK = True
     DEBUG = False
 
 config = Config()
@@ -56,6 +54,7 @@ TOKEN = config.BOT_TOKEN
 ADMIN_ID = config.ADMIN_ID
 logger.info(f"✅ توکن: {TOKEN[:10]}...")
 logger.info(f"✅ ادمین: {ADMIN_ID}")
+logger.info(f"✅ Webhook URL: {config.WEBHOOK_URL}")
 
 # ================= ایجاد پوشه‌ها =================
 os.makedirs(config.DOWNLOAD_PATH, exist_ok=True)
@@ -69,8 +68,6 @@ app = Flask(__name__)
 class Database:
     def __init__(self, db_path='database/bot.db'):
         self.db_path = db_path
-        self.conn = None
-        self.cursor = None
         self.lock = threading.Lock()
         self.init_database()
     
@@ -357,7 +354,6 @@ db = Database()
 
 # ================= صف دانلود =================
 download_queue = Queue()
-active_downloads = {}
 
 # ================= Worker برای دانلود =================
 def download_worker():
@@ -492,8 +488,6 @@ def start_command(message):
 1️⃣ لینک ویدیو رو بفرست
 2️⃣ فرمت مورد نظر رو انتخاب کن
 3️⃣ منتظر دانلود بمون
-
-🤖 **توسط:** @YourChannel
     """
     
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
@@ -702,7 +696,7 @@ def handle_message(message):
     )
     
     # بررسی لینک
-    if not (url.startswith(('http://', 'https://')) and ('youtube.com' in url or 'youtu.be' in url or 'youtu.be' in url)):
+    if not (url.startswith(('http://', 'https://')) and ('youtube.com' in url or 'youtu.be' in url)):
         bot.reply_to(message, "❌ لطفاً یک لینک معتبر از یوتیوب بفرست.")
         return
     
@@ -982,24 +976,6 @@ HTML_TEMPLATE = """
             background: #f8f9fa;
         }
         
-        .alert {
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        
-        .alert-success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
-        }
-        
-        .alert-danger {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
-        }
-        
         .footer {
             text-align: center;
             color: rgba(255,255,255,0.8);
@@ -1211,22 +1187,35 @@ def reset_stats():
     db.execute("UPDATE settings SET value = '0' WHERE key = 'total_downloads'")
     return redirect('/')
 
-# ================= راه‌اندازی =================
+# ================= تنظیم Webhook =================
 def setup_webhook():
-    """تنظیم webhook"""
-    if config.USE_WEBHOOK:
-        try:
-            webhook_url = config.WEBHOOK_URL
-            bot.remove_webhook()
-            time.sleep(1)
-            bot.set_webhook(url=webhook_url)
-            logger.info(f"✅ Webhook تنظیم شد: {webhook_url}")
+    """تنظیم webhook در تلگرام"""
+    try:
+        # حذف webhook قبلی
+        bot.remove_webhook()
+        time.sleep(1)
+        
+        # تنظیم webhook جدید
+        webhook_url = config.WEBHOOK_URL
+        success = bot.set_webhook(url=webhook_url)
+        
+        if success:
+            logger.info(f"✅ Webhook با موفقیت تنظیم شد: {webhook_url}")
+            
+            # دریافت اطلاعات webhook
+            webhook_info = bot.get_webhook_info()
+            logger.info(f"📡 اطلاعات Webhook: {webhook_info}")
+            
             return True
-        except Exception as e:
-            logger.error(f"❌ خطا در تنظیم webhook: {e}")
+        else:
+            logger.error("❌ خطا در تنظیم Webhook")
             return False
-    return True
+            
+    except Exception as e:
+        logger.error(f"❌ خطا در تنظیم webhook: {e}")
+        return False
 
+# ================= راه‌اندازی =================
 def signal_handler(sig, frame):
     """مدیریت سیگنال خروج"""
     logger.info("🛑 در حال خروج از برنامه...")
@@ -1237,37 +1226,20 @@ if __name__ == "__main__":
     
     logger.info("🚀 در حال راه‌اندازی ربات...")
     logger.info(f"👤 آیدی ادمین: {ADMIN_ID}")
+    logger.info(f"🌐 Webhook URL: {config.WEBHOOK_URL}")
     
-    # تنظیم webhook
-    webhook_ok = setup_webhook()
-    
-    if config.USE_WEBHOOK and webhook_ok:
-        # اجرا با webhook
-        logger.info(f"🚀 اجرا با webhook روی پورت {config.WEBHOOK_PORT}")
-        app.run(
-            host=config.WEBHOOK_HOST,
-            port=config.WEBHOOK_PORT,
-            debug=config.DEBUG,
-            threaded=True
-        )
+    # تنظیم webhook در تلگرام
+    if setup_webhook():
+        logger.info("✅ Webhook با موفقیت تنظیم شد")
     else:
-        # اجرا با polling
-        logger.info("🚀 اجرا با polling")
-        logger.info("🌐 پنل مدیریت روی آدرس http://localhost:5000 در دسترس است")
-        
-        # اجرای Flask در thread جداگانه
-        flask_thread = threading.Thread(
-            target=app.run,
-            kwargs={
-                'host': config.WEBHOOK_HOST,
-                'port': config.WEBHOOK_PORT,
-                'debug': config.DEBUG,
-                'threaded': True
-            },
-            daemon=True
-        )
-        flask_thread.start()
-        
-        # اجرای ربات
-        logger.info("✅ ربات با polling شروع به کار کرد")
-        bot.infinity_polling(timeout=60, long_polling_timeout=30)
+        logger.warning("⚠️ استفاده از polling به جای webhook")
+        config.USE_WEBHOOK = False
+    
+    # اجرای برنامه
+    logger.info(f"🚀 اجرا روی پورت {config.WEBHOOK_PORT}")
+    app.run(
+        host=config.WEBHOOK_HOST,
+        port=config.WEBHOOK_PORT,
+        debug=config.DEBUG,
+        threaded=True
+    )
