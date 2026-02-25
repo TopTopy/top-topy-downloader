@@ -12,7 +12,6 @@ import sqlite3
 import sys
 import signal
 import re
-import subprocess
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -25,15 +24,6 @@ PORT = int(os.environ.get('PORT', 8080))
 # ================= آماده‌سازی =================
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
-
-# ================= نصب curl_cffi (برای impersonate) =================
-try:
-    import curl_cffi
-    HAS_CURL_CFFI = True
-except ImportError:
-    HAS_CURL_CFFI = False
-    print("⚠️ curl_cffi نصب نیست. برای تیک‌تاک باید نصب بشه:")
-    print("pip install curl_cffi")
 
 # ================= دیتابیس =================
 class Database:
@@ -351,8 +341,8 @@ def detect_platform(url):
     else:
         return 'other'
 
-# ================= تابع دانلود با پشتیبانی تیک‌تاک =================
-def download_video(url, chat_id, user_id, message_obj=None, is_group=False):
+# ================= تابع دانلود =================
+def download_video(url, chat_id, user_id, message_obj, is_group=False):
     try:
         platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
@@ -365,71 +355,28 @@ def download_video(url, chat_id, user_id, message_obj=None, is_group=False):
             'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
         }
         
-        # تنظیمات مخصوص تیک‌تاک [citation:1][citation:5]
+        # تنظیمات بر اساس پلتفرم
         if platform == 'tiktok':
-            ydl_opts.update({
-                'format': 'best[ext=mp4]',
-                'extractor_args': {'tiktok': {'app_version': 'latest'}},
-            })
-            
-            # اگر curl_cffi نصب باشه، impersonate فعال میشه [citation:5]
-            if HAS_CURL_CFFI:
-                ydl_opts.update({
-                    'impersonate': 'chrome-131',
-                    'extractor_args': {'tiktok': {'webpage_download': '1'}},
-                })
-            
-            # اضافه کردن هدرهای مرورگر
             ydl_opts['headers'] = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
                 'Referer': 'https://www.tiktok.com/',
-                'Accept-Language': 'en-US,en;q=0.9',
             }
         
-        # تنظیمات مخصوص یوتیوب
-        elif platform == 'youtube':
-            if is_audio:
-                ydl_opts.update({
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                })
-            else:
-                ydl_opts.update({
-                    'format': 'best[filesize<300M]',
-                })
-        
-        # تنظیمات مخصوص اینستاگرام [citation:5]
-        elif platform == 'instagram':
-            ydl_opts['headers'] = {
-                'Referer': 'https://www.instagram.com/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            }
-            if is_audio:
-                ydl_opts['format'] = 'bestaudio/best'
-            else:
-                ydl_opts['format'] = 'best[filesize<300M]'
-        
-        # تنظیمات عمومی برای بقیه سایت‌ها
+        if is_audio:
+            ydl_opts.update({
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+            })
         else:
-            if is_audio:
-                ydl_opts.update({
-                    'format': 'bestaudio/best',
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                })
-            else:
-                ydl_opts.update({
-                    'format': 'best[filesize<300M]',
-                })
+            ydl_opts.update({
+                'format': 'best[filesize<300M]',
+            })
         
-        msg = bot.send_message(chat_id, f"⏳ **در حال دانلود از {platform}...**\n🔗 لینک دریافت شد", parse_mode="Markdown")
+        msg = bot.send_message(chat_id, f"⏳ **در حال دانلود از {platform}...**", parse_mode="Markdown")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
@@ -487,24 +434,9 @@ def download_video(url, chat_id, user_id, message_obj=None, is_group=False):
             else:
                 bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
     
-    except yt_dlp.utils.UnsupportedError:
-        error_msg = f"❌ **این سایت ({platform}) پشتیبانی نمیشه**"
-        if message_obj:
-            bot.reply_to(message_obj, error_msg, parse_mode="Markdown")
-        else:
-            bot.send_message(chat_id, error_msg, parse_mode="Markdown")
-    
     except Exception as e:
-        error_msg = f"❌ **خطا در دانلود از {platform}:**\n`{str(e)[:100]}`"
-        
-        # پیام خطای اختصاصی برای تیک‌تاک
-        if platform == 'tiktok' and 'impersonate' in str(e).lower():
-            error_msg += "\n\n💡 **نکته:** برای تیک‌تاک نیاز به نصب `curl_cffi` دارید:\n`pip install curl_cffi`"
-        
-        if message_obj:
-            bot.reply_to(message_obj, error_msg, parse_mode="Markdown")
-        else:
-            bot.send_message(chat_id, error_msg, parse_mode="Markdown")
+        error_msg = f"❌ **خطا در دانلود:**\n`{str(e)[:100]}`"
+        bot.send_message(chat_id, error_msg, parse_mode="Markdown")
 
 # ================= طراحی پیام خوش‌آمدگویی =================
 WELCOME_MESSAGE = """
@@ -515,27 +447,15 @@ WELCOME_MESSAGE = """
 ✨ **قابلیت‌های ویژه:**
 ━━━━━━━━━━━━━━━━━━
 📥 **دانلود از تمام سایت‌ها**
-• ✅ یوتیوب | اینستاگرام | توییتر
-• ✅ تیک‌تاک | فیسبوک | پینترست
+• ✅ یوتیوب | اینستاگرام | تیک‌تاک
+• ✅ توییتر | فیسبوک | پینترست
 • ✅ و بیش از ۱۰۰۰ سایت دیگر
 
-🎯 **امکانات ربات:**
-• 🎵 دانلود صوتی با کیفیت بالا
-• 🎬 دانلود ویدیو با کیفیت اصلی
-• 🖼️ دانلود عکس و گیف
-
-📊 **محدودیت‌ها:**
-• ⬆️ حجم مجاز: ۳۰۰ مگابایت
-• ⚡ سرعت بالا و بدون محدودیت
-
-🤖 **نحوه استفاده:**
+🎯 **نحوه استفاده:**
 ━━━━━━━━━━━━━━━━━━
-✅ **در گروه‌ها:**
-   فقط لینک رو بفرستید
-
-✅ **در پیوی:**
-   /start - شروع ربات
-   /help - راهنما
+✅ فقط کافیه لینک رو بفرستی
+✅ ربات خودش تشخیص میده چه فرمتی باشه
+✅ حجم مجاز: ۳۰۰ مگابایت
 
 🌟 **توسط:** @top_topy_downloader
 📢 **کانال:** @IdTOP_TOPY
@@ -552,12 +472,6 @@ HELP_MESSAGE = """
 /help - راهنما
 /admin - پنل مدیریت (فقط ادمین)
 
-🎯 **نکات دانلود:**
-━━━━━━━━━━━━━━━━━━
-1️⃣ لینک رو مستقیم بفرستید
-2️⃣ ربات خودش تشخیص میده
-3️⃣ منتظر بمونید تا آپلود شه
-
 💡 **مثال‌ها:**
 ━━━━━━━━━━━━━━━━━━
 🔹 ویدیو یوتیوب:
@@ -566,14 +480,8 @@ HELP_MESSAGE = """
 🔹 ویدیو تیک‌تاک:
    https://tiktok.com/...
    
-🔹 صوتی:
-   https://youtube.com/... mp3
-
-⚠️ **نکته تیک‌تاک:**
-━━━━━━━━━━━━━━━━━━
-تیک‌تاک گاهی محدودیت داره. اگه خطا دیدید، دوباره امتحان کنید.
-
-📢 **کانال ما:** @IdTOP_TOPY
+🔹 پست اینستاگرام:
+   https://instagram.com/...
 """
 
 # ================= دستورات ربات =================
@@ -591,7 +499,6 @@ def start(message):
         InlineKeyboardButton("📚 راهنما", callback_data="help"),
         InlineKeyboardButton("📢 کانال", url="https://t.me/IdTOP_TOPY"),
         InlineKeyboardButton("👨‍💻 ادمین", url=f"tg://user?id={ADMIN_ID}"),
-        InlineKeyboardButton("🌐 سایت‌ها", callback_data="sites")
     )
     
     bot.reply_to(message, WELCOME_MESSAGE, reply_markup=markup, parse_mode="Markdown")
@@ -613,41 +520,20 @@ def admin_panel(message):
     markup.add(
         InlineKeyboardButton("🟢 روشن" if stats['bot_status'] == 'OFF' else "🟢 روشن ✅", callback_data="toggle_on"),
         InlineKeyboardButton("🔴 خاموش" if stats['bot_status'] == 'ON' else "🔴 خاموش ✅", callback_data="toggle_off"),
-        InlineKeyboardButton("👥 کاربران", callback_data="show_users"),
-        InlineKeyboardButton("👥 گروه‌ها", callback_data="show_groups"),
-        InlineKeyboardButton("📥 دانلودها", callback_data="show_downloads"),
         InlineKeyboardButton("📊 آمار", callback_data="show_stats"),
-        InlineKeyboardButton("🔄 ریست آمار", callback_data="reset_stats"),
-        InlineKeyboardButton("🔒 بلاک کاربر", callback_data="block_user"),
-        InlineKeyboardButton("🔓 آنبلاک کاربر", callback_data="unblock_user"),
-        InlineKeyboardButton("👥 حالت گروه", callback_data="toggle_group"),
-        InlineKeyboardButton("👤 حالت خصوصی", callback_data="toggle_private")
+        InlineKeyboardButton("👥 کاربران", callback_data="show_users"),
+        InlineKeyboardButton("📥 دانلودها", callback_data="show_downloads"),
     )
     
     text = f"""
-╔══════════════════════════╗
-║     👑 **پنل مدیریت**     ║
-╚══════════════════════════╝
+👑 **پنل مدیریت**
 
 📊 **آمار کلی:**
-━━━━━━━━━━━━━━━━━━
-👥 کاربران: {stats['total_users']} نفر
-👥 گروه‌ها: {stats['total_groups']} گروه
+👥 کاربران: {stats['total_users']}
 📥 دانلودها: {stats['total_downloads']}
+📊 امروز: {stats['today_downloads']}
 
-📈 **امروز:**
-━━━━━━━━━━━━━━━━━━
-👤 کاربران جدید: {stats['today_users']}
-👥 گروه‌های فعال: {stats['active_groups']}
-📊 دانلودها: {stats['today_downloads']}
-
-🟢 **وضعیت:**
-━━━━━━━━━━━━━━━━━━
-ربات: {'روشن ✅' if stats['bot_status'] == 'ON' else 'خاموش ❌'}
-گروه: {'فعال ✅' if stats['group_mode'] == 'ON' else 'غیرفعال ❌'}
-خصوصی: {'فعال ✅' if stats['private_mode'] == 'ON' else 'غیرفعال ❌'}
-
-🔒 کاربران بلاک: {stats['blocked']}
+🟢 وضعیت: {'روشن ✅' if stats['bot_status'] == 'ON' else 'خاموش ❌'}
     """
     
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
@@ -660,7 +546,6 @@ def callback_handler(call):
             InlineKeyboardButton("📚 راهنما", callback_data="help"),
             InlineKeyboardButton("📢 کانال", url="https://t.me/IdTOP_TOPY"),
             InlineKeyboardButton("👨‍💻 ادمین", url=f"tg://user?id={ADMIN_ID}"),
-            InlineKeyboardButton("🌐 سایت‌ها", callback_data="sites")
         )
         bot.edit_message_text(WELCOME_MESSAGE, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     
@@ -668,35 +553,6 @@ def callback_handler(call):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_start"))
         bot.edit_message_text(HELP_MESSAGE, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif call.data == "sites":
-        sites_text = """
-╔══════════════════════════╗
-║    🌐 **سایت‌های پشتیبانی**   ║
-╚══════════════════════════╝
-
-✅ **پشتیبانی شده:**
-━━━━━━━━━━━━━━━━━━
-• YouTube ✅
-• TikTok ✅ (با تنظیمات ویژه)
-• Instagram ✅
-• Twitter/X ✅
-• Facebook ✅
-• Vimeo ✅
-• Dailymotion ✅
-• SoundCloud ✅
-• Pinterest ✅
-• Flickr ✅
-• و بیش از ۱۰۰۰ سایت دیگر
-
-⚠️ **نکته تیک‌تاک:**
-━━━━━━━━━━━━━━━━━━
-تیک‌تاک محدودیت‌های زیادی داره.
-اگه خطا دیدید، چند بار امتحان کنید.
-        """
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_start"))
-        bot.edit_message_text(sites_text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     
     # بخش ادمین
     if call.from_user.id != ADMIN_ID:
@@ -706,112 +562,50 @@ def callback_handler(call):
     if call.data == "toggle_on":
         db.set_setting('bot_status', 'ON')
         bot.answer_callback_query(call.id, "✅ ربات روشن شد")
-        bot.edit_message_text("✅ ربات با موفقیت روشن شد", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("✅ ربات روشن شد", call.message.chat.id, call.message.message_id)
     
     elif call.data == "toggle_off":
         db.set_setting('bot_status', 'OFF')
         bot.answer_callback_query(call.id, "✅ ربات خاموش شد")
-        bot.edit_message_text("✅ ربات با موفقیت خاموش شد", call.message.chat.id, call.message.message_id)
-    
-    elif call.data == "toggle_group":
-        new = db.toggle_group_mode()
-        bot.answer_callback_query(call.id, f"✅ حالت گروه {new} شد")
-        bot.edit_message_text(f"✅ حالت گروه {new} شد", call.message.chat.id, call.message.message_id)
-    
-    elif call.data == "toggle_private":
-        new = db.toggle_private_mode()
-        bot.answer_callback_query(call.id, f"✅ حالت خصوصی {new} شد")
-        bot.edit_message_text(f"✅ حالت خصوصی {new} شد", call.message.chat.id, call.message.message_id)
+        bot.edit_message_text("✅ ربات خاموش شد", call.message.chat.id, call.message.message_id)
     
     elif call.data == "show_stats":
         stats = db.get_stats()
         text = f"""
 📊 **آمار کامل**
 
-👥 **کاربران:**
-• کل: {stats['total_users']}
-• جدید امروز: {stats['today_users']}
-• فعال امروز: {stats['active_today']}
-• بلاک شده: {stats['blocked']}
-
-👥 **گروه‌ها:**
-• کل: {stats['total_groups']}
-• جدید امروز: {stats['today_groups']}
-• فعال امروز: {stats['active_groups']}
-
-📥 **دانلودها:**
-• کل: {stats['total_downloads']}
-• امروز: {stats['today_downloads']}
-
-🟢 **وضعیت:**
-• ربات: {stats['bot_status']}
-• گروه: {stats['group_mode']}
-• خصوصی: {stats['private_mode']}
+👥 کاربران کل: {stats['total_users']}
+👥 گروه‌ها: {stats['total_groups']}
+📥 دانلود کل: {stats['total_downloads']}
+📊 دانلود امروز: {stats['today_downloads']}
+🟢 فعال امروز: {stats['active_today']}
+🔒 بلاک شده: {stats['blocked']}
         """
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
     elif call.data == "show_users":
-        users = db.get_users(20)
-        text = "👥 **۲۰ کاربر آخر:**\n\n"
-        for u in users[:10]:
+        users = db.get_users(10)
+        text = "👥 **۱۰ کاربر آخر:**\n\n"
+        for u in users:
             status = "🔒" if u[6] else "✅"
-            admin = "👑" if u[7] else ""
             name = u[2] or u[1] or 'ناشناس'
-            text += f"{admin}{status} `{u[0]}` | {name} | دانلود: {u[5]}\n"
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    
-    elif call.data == "show_groups":
-        groups = db.get_groups(20)
-        text = "👥 **۲۰ گروه آخر:**\n\n"
-        for g in groups[:10]:
-            status = "✅" if g[4] else "❌"
-            text += f"{status} `{g[0]}` | {g[1][:30]} | {g[3][:16]}\n"
+            text += f"{status} `{u[0]}` | {name} | دانلود: {u[5]}\n"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
     elif call.data == "show_downloads":
         downloads = db.get_recent_downloads(10)
         text = "📥 **۱۰ دانلود آخر:**\n\n"
         for d in downloads:
-            name = d[9] or d[8] or 'ناشناس'
-            group = f" در {d[10][:20]}" if d[10] else ""
-            text += f"• {name}{group} | {d[3]} | {d[5]} بایت | {d[11]}\n"
+            name = d[8] or d[9] or 'ناشناس'
+            text += f"• {name} | {d[3]} | {d[11]} | {d[6][:16]}\n"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    
-    elif call.data == "reset_stats":
-        db.reset_stats()
-        bot.answer_callback_query(call.id, "✅ آمار ریست شد")
-        bot.edit_message_text("✅ آمار با موفقیت ریست شد", call.message.chat.id, call.message.message_id)
-    
-    elif call.data == "block_user":
-        bot.edit_message_text("🔒 آیدی کاربر مورد نظر برای بلاک رو بفرست:", call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler(call.message, block_user_handler)
-    
-    elif call.data == "unblock_user":
-        bot.edit_message_text("🔓 آیدی کاربر مورد نظر برای آنبلاک رو بفرست:", call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler(call.message, unblock_user_handler)
-
-def block_user_handler(message):
-    try:
-        user_id = int(message.text.strip())
-        db.block_user(user_id)
-        bot.reply_to(message, f"✅ کاربر {user_id} بلاک شد")
-    except:
-        bot.reply_to(message, "❌ آیدی نامعتبر")
-
-def unblock_user_handler(message):
-    try:
-        user_id = int(message.text.strip())
-        db.unblock_user(user_id)
-        bot.reply_to(message, f"✅ کاربر {user_id} آنبلاک شد")
-    except:
-        bot.reply_to(message, "❌ آیدی نامعتبر")
 
 # ================= پردازش پیام‌ها =================
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
-    text = message.text
+    text = message.text.strip()
     
     # ذخیره کاربر
     db.add_user(user_id, message.from_user.username, message.from_user.first_name)
@@ -826,25 +620,18 @@ def handle_message(message):
     
     # بررسی روشن بودن ربات
     if db.get_setting('bot_status') == 'OFF':
+        if message.chat.type == 'private':
+            bot.reply_to(message, "⛔ ربات خاموش است")
         return
     
-    # بررسی حالت گروه
-    if message.chat.type in ['group', 'supergroup'] and db.get_setting('group_mode') == 'OFF':
+    # بررسی لینک
+    if not text.startswith(('http://', 'https://')):
         return
     
-    # بررسی حالت خصوصی
-    if message.chat.type == 'private' and db.get_setting('private_mode') == 'OFF':
-        bot.reply_to(message, "❌ حالت خصوصی غیرفعال است")
-        return
-    
-    # استخراج لینک‌ها
-    urls = extract_urls(text)
-    
-    if urls:
-        platform = detect_platform(urls[0])
-        bot.reply_to(message, f"✅ **لینک {platform} دریافت شد، دانلود شروع شد...**", parse_mode="Markdown")
-        is_group = message.chat.type in ['group', 'supergroup']
-        threading.Thread(target=download_video, args=(urls[0], chat_id, user_id, message, is_group)).start()
+    # شروع دانلود
+    bot.reply_to(message, "✅ **لینک دریافت شد، دانلود شروع شد...**", parse_mode="Markdown")
+    is_group = message.chat.type in ['group', 'supergroup']
+    threading.Thread(target=download_video, args=(text, chat_id, user_id, message, is_group)).start()
 
 # ================= پنل وب =================
 HTML_TEMPLATE = """
@@ -853,27 +640,21 @@ HTML_TEMPLATE = """
 <head>
     <title>پنل مدیریت ربات</title>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Vazir', Tahoma, Arial, sans-serif;
+            font-family: Tahoma, Arial, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             padding: 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
+        .container { max-width: 1200px; margin: 0 auto; }
         .header {
             background: white;
             padding: 30px;
             border-radius: 15px;
             margin-bottom: 20px;
             text-align: center;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
-            border-right: 5px solid #667eea;
         }
         .stats-grid {
             display: grid;
@@ -886,23 +667,12 @@ HTML_TEMPLATE = """
             padding: 20px;
             border-radius: 10px;
             text-align: center;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-            border-bottom: 3px solid #667eea;
         }
         .stat-value {
             font-size: 28px;
             font-weight: bold;
             color: #667eea;
         }
-        .status-badge {
-            display: inline-block;
-            padding: 8px 20px;
-            border-radius: 20px;
-            font-weight: bold;
-            margin: 10px 0;
-        }
-        .status-on { background: #4caf50; color: white; }
-        .status-off { background: #f44336; color: white; }
         .btn {
             display: inline-block;
             padding: 10px 20px;
@@ -911,144 +681,36 @@ HTML_TEMPLATE = """
             cursor: pointer;
             text-decoration: none;
             margin: 5px;
-            font-weight: bold;
         }
         .btn-success { background: #4caf50; color: white; }
         .btn-danger { background: #f44336; color: white; }
-        .btn-primary { background: #667eea; color: white; }
-        .btn-warning { background: #ff9800; color: white; }
-        table {
-            width: 100%;
-            background: white;
-            border-radius: 10px;
-            overflow: hidden;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-            margin-bottom: 20px;
-        }
-        th {
-            background: #667eea;
-            color: white;
-            padding: 12px;
-            text-align: right;
-        }
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #f0f0f0;
-        }
-        tr:hover { background: #f8f9fa; }
-        .footer {
-            text-align: center;
-            color: white;
-            margin-top: 20px;
-            padding: 20px;
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 پنل مدیریت ربات دانلود</h1>
-            <div class="status-badge {{ 'status-on' if stats.bot_status == 'ON' else 'status-off' }}">
-                وضعیت: {{ 'روشن' if stats.bot_status == 'ON' else 'خاموش' }}
-            </div>
+            <h1>🤖 پنل مدیریت ربات</h1>
+            <p>وضعیت: {{ '🟢 روشن' if stats.bot_status == 'ON' else '🔴 خاموش' }}</p>
         </div>
         
         <div class="stats-grid">
             <div class="stat-card">
-                <div>👥 کل کاربران</div>
+                <div>👥 کاربران</div>
                 <div class="stat-value">{{ stats.total_users }}</div>
             </div>
             <div class="stat-card">
-                <div>👥 کل گروه‌ها</div>
-                <div class="stat-value">{{ stats.total_groups }}</div>
-            </div>
-            <div class="stat-card">
-                <div>📥 کل دانلودها</div>
+                <div>📥 دانلود کل</div>
                 <div class="stat-value">{{ stats.total_downloads }}</div>
             </div>
             <div class="stat-card">
-                <div>📊 دانلود امروز</div>
+                <div>📊 امروز</div>
                 <div class="stat-value">{{ stats.today_downloads }}</div>
             </div>
-            <div class="stat-card">
-                <div>🟢 فعال امروز</div>
-                <div class="stat-value">{{ stats.active_today }}</div>
-            </div>
-            <div class="stat-card">
-                <div>🔒 بلاک شده</div>
-                <div class="stat-value">{{ stats.blocked }}</div>
-            </div>
         </div>
         
-        <div style="text-align: center; margin: 20px 0;">
+        <div style="text-align: center;">
             <a href="/toggle/on" class="btn btn-success">🟢 روشن</a>
             <a href="/toggle/off" class="btn btn-danger">🔴 خاموش</a>
-            <a href="/reset" class="btn btn-warning" onclick="return confirm('آیا مطمئنی؟')">🔄 ریست آمار</a>
-        </div>
-        
-        <h3 style="color: white; margin: 20px 0;">👥 آخرین کاربران</h3>
-        <table>
-            <tr>
-                <th>آیدی</th>
-                <th>نام</th>
-                <th>دانلودها</th>
-                <th>وضعیت</th>
-                <th>آخرین بازدید</th>
-            </tr>
-            {% for u in users %}
-            <tr>
-                <td>{{ u[0] }}</td>
-                <td>{{ u[2] or u[1] or 'ناشناس' }}</td>
-                <td>{{ u[5] }}</td>
-                <td>{{ '🔒 بلاک' if u[6] else '✅ فعال' }}</td>
-                <td>{{ u[4][:16] if u[4] else 'نامشخص' }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-        
-        <h3 style="color: white; margin: 20px 0;">👥 آخرین گروه‌ها</h3>
-        <table>
-            <tr>
-                <th>آیدی</th>
-                <th>نام گروه</th>
-                <th>وضعیت</th>
-                <th>آخرین فعالیت</th>
-            </tr>
-            {% for g in groups %}
-            <tr>
-                <td>{{ g[0] }}</td>
-                <td>{{ g[1][:30] }}</td>
-                <td>{{ '✅ فعال' if g[4] else '❌ غیرفعال' }}</td>
-                <td>{{ g[3][:16] }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-        
-        <h3 style="color: white; margin: 20px 0;">📥 آخرین دانلودها</h3>
-        <table>
-            <tr>
-                <th>کاربر</th>
-                <th>پلتفرم</th>
-                <th>فرمت</th>
-                <th>حجم</th>
-                <th>منبع</th>
-                <th>زمان</th>
-            </tr>
-            {% for d in downloads %}
-            <tr>
-                <td>{{ d[8] or d[9] or d[1] }}</td>
-                <td>{{ d[11] }}</td>
-                <td>{{ d[3] }}</td>
-                <td>{{ d[5] }} بایت</td>
-                <td>{{ '👥 گروه' if d[10] == 'group' else '👤 خصوصی' }}</td>
-                <td>{{ d[6][:16] }}</td>
-            </tr>
-            {% endfor %}
-        </table>
-        
-        <div class="footer">
-            <p>🤖 ربات دانلود حرفه‌ای | ساخته شده با ❤️</p>
-            <p>📢 کانال: @IdTOP_TOPY</p>
         </div>
     </div>
 </body>
@@ -1058,20 +720,12 @@ HTML_TEMPLATE = """
 @app.route('/')
 def home():
     stats = db.get_stats()
-    users = db.get_users(10)
-    groups = db.get_groups(10)
-    downloads = db.get_recent_downloads(10)
-    return render_template_string(HTML_TEMPLATE, stats=stats, users=users, groups=groups, downloads=downloads)
+    return render_template_string(HTML_TEMPLATE, stats=stats)
 
 @app.route('/toggle/<status>')
 def toggle(status):
     if status in ['on', 'off']:
         db.set_setting('bot_status', 'ON' if status == 'on' else 'OFF')
-    return redirect('/')
-
-@app.route('/reset')
-def reset():
-    db.reset_stats()
     return redirect('/')
 
 # ================= Webhook =================
@@ -1089,13 +743,6 @@ if __name__ == "__main__":
 ║   🚀 راه‌اندازی ربات...   ║
 ╚══════════════════════════╝
     """)
-    
-    if not HAS_CURL_CFFI:
-        print("""
-⚠️ **هشدار تیک‌تاک:**
-   curl_cffi نصب نیست! برای دانلود تیک‌تاک باید نصب بشه:
-   pip install curl_cffi
-        """)
     
     # تنظیم webhook
     bot.remove_webhook()
