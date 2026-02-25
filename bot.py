@@ -37,8 +37,8 @@ class Config:
     MAX_FILE_SIZE = 300 * 1024 * 1024  # 300 مگابایت
     DOWNLOAD_PATH = "downloads"
     
-    # تنظیمات وب‌هوک - برای Railway
-    RAILWAY_PUBLIC_DOMAIN = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'top-topy-downloader.up.railway.app')
+    # تنظیمات وب‌هوک - برای Railway با دامنه جدید
+    RAILWAY_PUBLIC_DOMAIN = os.environ.get('RAILWAY_PUBLIC_DOMAIN', 'top-topy-downloader-production.up.railway.app')
     WEBHOOK_URL = f"https://{RAILWAY_PUBLIC_DOMAIN}/webhook"
     WEBHOOK_HOST = "0.0.0.0"
     WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
@@ -55,6 +55,7 @@ ADMIN_ID = config.ADMIN_ID
 logger.info(f"✅ توکن: {TOKEN[:10]}...")
 logger.info(f"✅ ادمین: {ADMIN_ID}")
 logger.info(f"✅ Webhook URL: {config.WEBHOOK_URL}")
+logger.info(f"✅ دامنه: {config.RAILWAY_PUBLIC_DOMAIN}")
 
 # ================= ایجاد پوشه‌ها =================
 os.makedirs(config.DOWNLOAD_PATH, exist_ok=True)
@@ -761,11 +762,31 @@ def download_callback(call):
 def webhook():
     """دریافت آپدیت‌های تلگرام"""
     if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
-        bot.process_new_updates([update])
-        return 'OK', 200
+        try:
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
+            bot.process_new_updates([update])
+            return 'OK', 200
+        except Exception as e:
+            logger.error(f"خطا در پردازش webhook: {e}")
+            return 'Error', 500
     return 'Invalid request', 403
+
+# ================= مسیرهای تست =================
+@app.route('/test', methods=['GET'])
+def test():
+    """مسیر تست برای اطمینان از اجرای برنامه"""
+    return f"Bot is running! Webhook URL: {config.WEBHOOK_URL}", 200
+
+@app.route('/health', methods=['GET'])
+def health():
+    """مسیر بررسی سلامت"""
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'webhook_url': config.WEBHOOK_URL,
+        'domain': config.RAILWAY_PUBLIC_DOMAIN
+    }), 200
 
 # ================= پنل وب =================
 HTML_TEMPLATE = """
@@ -1112,6 +1133,8 @@ HTML_TEMPLATE = """
         
         <div class="footer">
             <p>ربات دانلود یوتیوب | ساخته شده با ❤️ | نسخه 2.0</p>
+            <p>دامنه فعلی: {{ domain }}</p>
+            <p>Webhook: {{ webhook_url }}</p>
         </div>
     </div>
 </body>
@@ -1131,7 +1154,9 @@ def home():
         stats=stats,
         bot_status=bot_status[0] if bot_status else 'ON',
         recent_users=recent_users,
-        recent_downloads=recent_downloads
+        recent_downloads=recent_downloads,
+        domain=config.RAILWAY_PUBLIC_DOMAIN,
+        webhook_url=config.WEBHOOK_URL
     )
 
 @app.route('/toggle', methods=['POST'])
@@ -1227,12 +1252,13 @@ if __name__ == "__main__":
     logger.info("🚀 در حال راه‌اندازی ربات...")
     logger.info(f"👤 آیدی ادمین: {ADMIN_ID}")
     logger.info(f"🌐 Webhook URL: {config.WEBHOOK_URL}")
+    logger.info(f"🌍 دامنه: {config.RAILWAY_PUBLIC_DOMAIN}")
     
     # تنظیم webhook در تلگرام
     if setup_webhook():
         logger.info("✅ Webhook با موفقیت تنظیم شد")
     else:
-        logger.warning("⚠️ استفاده از polling به جای webhook")
+        logger.warning("⚠️ خطا در تنظیم Webhook - ادامه با polling")
         config.USE_WEBHOOK = False
     
     # اجرای برنامه
