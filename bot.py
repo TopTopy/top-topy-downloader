@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import signal
 import re
+import subprocess
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -25,7 +26,16 @@ PORT = int(os.environ.get('PORT', 8080))
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
-# ================= دیتابیس پیشرفته =================
+# ================= نصب curl_cffi (برای impersonate) =================
+try:
+    import curl_cffi
+    HAS_CURL_CFFI = True
+except ImportError:
+    HAS_CURL_CFFI = False
+    print("⚠️ curl_cffi نصب نیست. برای تیک‌تاک باید نصب بشه:")
+    print("pip install curl_cffi")
+
+# ================= دیتابیس =================
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
@@ -88,7 +98,8 @@ class Database:
             format TEXT,
             size INTEGER,
             timestamp TIMESTAMP,
-            source TEXT
+            source TEXT,
+            platform TEXT
         )
         """)
         
@@ -183,14 +194,14 @@ class Database:
         
         self.conn.commit()
     
-    def add_download(self, user_id, chat_id, url, format_type, size, source='private'):
+    def add_download(self, user_id, chat_id, url, format_type, size, source='private', platform='unknown'):
         now = datetime.now()
         date = now.strftime('%Y-%m-%d')
         
         self.cursor.execute("""
-            INSERT INTO downloads (user_id, chat_id, url, format, size, timestamp, source)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (user_id, chat_id, url, format_type, size, now, source))
+            INSERT INTO downloads (user_id, chat_id, url, format, size, timestamp, source, platform)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (user_id, chat_id, url, format_type, size, now, source, platform))
         
         self.cursor.execute("UPDATE users SET download_count = download_count + 1, last_use = ? WHERE user_id = ?", (now, user_id))
         
@@ -324,53 +335,126 @@ def extract_urls(text):
     url_pattern = re.compile(r'https?://[^\s]+')
     return url_pattern.findall(text)
 
-# ================= تابع دانلود =================
-def download_video(url, chat_id, user_id, message_id=None, is_group=False):
+# ================= تشخیص پلتفرم =================
+def detect_platform(url):
+    url_lower = url.lower()
+    if 'tiktok.com' in url_lower:
+        return 'tiktok'
+    elif 'youtube.com' in url_lower or 'youtu.be' in url_lower:
+        return 'youtube'
+    elif 'instagram.com' in url_lower:
+        return 'instagram'
+    elif 'twitter.com' in url_lower or 'x.com' in url_lower:
+        return 'twitter'
+    elif 'facebook.com' in url_lower or 'fb.com' in url_lower:
+        return 'facebook'
+    else:
+        return 'other'
+
+# ================= تابع دانلود با پشتیبانی تیک‌تاک =================
+def download_video(url, chat_id, user_id, message_obj=None, is_group=False):
     try:
-        # تشخیص خودکار نوع محتوا
+        platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
         
-        if is_audio:
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
-            }
-        else:
-            ydl_opts = {
-                'format': 'best[filesize<300M]',
-                'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
+        # تنظیمات پایه
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'ignoreerrors': True,
+            'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
+        }
+        
+        # تنظیمات مخصوص تیک‌تاک [citation:1][citation:5]
+        if platform == 'tiktok':
+            ydl_opts.update({
+                'format': 'best[ext=mp4]',
+                'extractor_args': {'tiktok': {'app_version': 'latest'}},
+            })
+            
+            # اگر curl_cffi نصب باشه، impersonate فعال میشه [citation:5]
+            if HAS_CURL_CFFI:
+                ydl_opts.update({
+                    'impersonate': 'chrome-131',
+                    'extractor_args': {'tiktok': {'webpage_download': '1'}},
+                })
+            
+            # اضافه کردن هدرهای مرورگر
+            ydl_opts['headers'] = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                'Referer': 'https://www.tiktok.com/',
+                'Accept-Language': 'en-US,en;q=0.9',
             }
         
-        msg = bot.send_message(chat_id, "⏳ **دارم دانلود میکنم...**\n🔗 لینک دریافت شد", parse_mode="Markdown")
+        # تنظیمات مخصوص یوتیوب
+        elif platform == 'youtube':
+            if is_audio:
+                ydl_opts.update({
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                })
+            else:
+                ydl_opts.update({
+                    'format': 'best[filesize<300M]',
+                })
+        
+        # تنظیمات مخصوص اینستاگرام [citation:5]
+        elif platform == 'instagram':
+            ydl_opts['headers'] = {
+                'Referer': 'https://www.instagram.com/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            if is_audio:
+                ydl_opts['format'] = 'bestaudio/best'
+            else:
+                ydl_opts['format'] = 'best[filesize<300M]'
+        
+        # تنظیمات عمومی برای بقیه سایت‌ها
+        else:
+            if is_audio:
+                ydl_opts.update({
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '192',
+                    }],
+                })
+            else:
+                ydl_opts.update({
+                    'format': 'best[filesize<300M]',
+                })
+        
+        msg = bot.send_message(chat_id, f"⏳ **در حال دانلود از {platform}...**\n🔗 لینک دریافت شد", parse_mode="Markdown")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
+            
+            if not info:
+                bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
+                return
+            
             title = info.get('title', 'فایل')
-            extractor = info.get('extractor', 'unknown')
+            extractor = info.get('extractor', platform)
             
             # پیدا کردن فایل
+            filename = None
             if is_audio:
                 filename = f"{DOWNLOAD_PATH}/{title}.mp3"
             else:
                 filename = ydl.prepare_filename(info)
-                if not os.path.exists(filename):
+                
+                if not filename or not os.path.exists(filename):
                     for f in os.listdir(DOWNLOAD_PATH):
                         if title in f:
                             filename = os.path.join(DOWNLOAD_PATH, f)
                             break
             
-            if os.path.exists(filename):
+            if filename and os.path.exists(filename):
                 size = os.path.getsize(filename)
                 
                 if size <= MAX_FILE_SIZE:
@@ -390,7 +474,7 @@ def download_video(url, chat_id, user_id, message_id=None, is_group=False):
                     
                     # ثبت آمار
                     source = 'group' if is_group else 'private'
-                    db.add_download(user_id, chat_id, url, 'audio' if is_audio else 'video', size, source)
+                    db.add_download(user_id, chat_id, url, 'audio' if is_audio else 'video', size, source, platform)
                     
                     bot.delete_message(chat_id, msg.message_id)
                 else:
@@ -403,10 +487,22 @@ def download_video(url, chat_id, user_id, message_id=None, is_group=False):
             else:
                 bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
     
+    except yt_dlp.utils.UnsupportedError:
+        error_msg = f"❌ **این سایت ({platform}) پشتیبانی نمیشه**"
+        if message_obj:
+            bot.reply_to(message_obj, error_msg, parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, error_msg, parse_mode="Markdown")
+    
     except Exception as e:
-        error_msg = f"❌ **خطا:**\n`{str(e)[:100]}`"
-        if message_id:
-            bot.reply_to(message_id, error_msg, parse_mode="Markdown")
+        error_msg = f"❌ **خطا در دانلود از {platform}:**\n`{str(e)[:100]}`"
+        
+        # پیام خطای اختصاصی برای تیک‌تاک
+        if platform == 'tiktok' and 'impersonate' in str(e).lower():
+            error_msg += "\n\n💡 **نکته:** برای تیک‌تاک نیاز به نصب `curl_cffi` دارید:\n`pip install curl_cffi`"
+        
+        if message_obj:
+            bot.reply_to(message_obj, error_msg, parse_mode="Markdown")
         else:
             bot.send_message(chat_id, error_msg, parse_mode="Markdown")
 
@@ -419,37 +515,27 @@ WELCOME_MESSAGE = """
 ✨ **قابلیت‌های ویژه:**
 ━━━━━━━━━━━━━━━━━━
 📥 **دانلود از تمام سایت‌ها**
-• یوتیوب | اینستاگرام | تیک‌تاک
-• توییتر | فیسبوک | پینترست
-• و بیش از ۱۰۰۰ سایت دیگر
+• ✅ یوتیوب | اینستاگرام | توییتر
+• ✅ تیک‌تاک | فیسبوک | پینترست
+• ✅ و بیش از ۱۰۰۰ سایت دیگر
 
 🎯 **امکانات ربات:**
-• 🎵 دانلود صوتی با کیفیت ۳۲۰kbps
+• 🎵 دانلود صوتی با کیفیت بالا
 • 🎬 دانلود ویدیو با کیفیت اصلی
 • 🖼️ دانلود عکس و گیف
-• 📄 دانلود فایل‌های معمولی
 
 📊 **محدودیت‌ها:**
 • ⬆️ حجم مجاز: ۳۰۰ مگابایت
 • ⚡ سرعت بالا و بدون محدودیت
-• 🔄 پشتیبانی از لینک‌های طولانی
 
 🤖 **نحوه استفاده:**
 ━━━━━━━━━━━━━━━━━━
 ✅ **در گروه‌ها:**
-   فقط لینک رو بفرستید، 
-   خودم تشخیص میدم چی دانلود کنم
+   فقط لینک رو بفرستید
 
 ✅ **در پیوی:**
    /start - شروع ربات
    /help - راهنما
-
-🎯 **نکات مهم:**
-━━━━━━━━━━━━━━━━━━
-🔹 برای دانلود صوتی، 
-   کلمه mp3 یا audio رو توی لینک بنویس
-🔹 لینک‌های یوتیوب سریعترین速度
-🔹 پشتیبانی ۲۴ ساعته توسط ادمین
 
 🌟 **توسط:** @top_topy_downloader
 📢 **کانال:** @IdTOP_TOPY
@@ -474,20 +560,18 @@ HELP_MESSAGE = """
 
 💡 **مثال‌ها:**
 ━━━━━━━━━━━━━━━━━━
-🔹 ویدیو:
+🔹 ویدیو یوتیوب:
    https://youtube.com/...
+   
+🔹 ویدیو تیک‌تاک:
+   https://tiktok.com/...
    
 🔹 صوتی:
    https://youtube.com/... mp3
-   
-🔹 اینستاگرام:
-   https://instagram.com/...
 
-⚠️ **محدودیت‌ها:**
+⚠️ **نکته تیک‌تاک:**
 ━━━━━━━━━━━━━━━━━━
-• حجم: ۳۰۰ مگابایت
-• فقط لینک‌های معتبر
-• بدون نیاز به عضویت
+تیک‌تاک گاهی محدودیت داره. اگه خطا دیدید، دوباره امتحان کنید.
 
 📢 **کانال ما:** @IdTOP_TOPY
 """
@@ -591,29 +675,24 @@ def callback_handler(call):
 ║    🌐 **سایت‌های پشتیبانی**   ║
 ╚══════════════════════════╝
 
-🎬 **ویدیویی:**
+✅ **پشتیبانی شده:**
 ━━━━━━━━━━━━━━━━━━
-• YouTube
-• Instagram
-• TikTok
-• Twitter/X
-• Facebook
-• Vimeo
-• Dailymotion
+• YouTube ✅
+• TikTok ✅ (با تنظیمات ویژه)
+• Instagram ✅
+• Twitter/X ✅
+• Facebook ✅
+• Vimeo ✅
+• Dailymotion ✅
+• SoundCloud ✅
+• Pinterest ✅
+• Flickr ✅
+• و بیش از ۱۰۰۰ سایت دیگر
 
-🎵 **صوتی:**
+⚠️ **نکته تیک‌تاک:**
 ━━━━━━━━━━━━━━━━━━
-• SoundCloud
-• Spotify
-• Apple Music
-
-🖼️ **عکس:**
-━━━━━━━━━━━━━━━━━━
-• Pinterest
-• Flickr
-• Imgur
-
-➕ **و بیش از ۱۰۰۰ سایت دیگر...**
+تیک‌تاک محدودیت‌های زیادی داره.
+اگه خطا دیدید، چند بار امتحان کنید.
         """
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_start"))
@@ -695,7 +774,7 @@ def callback_handler(call):
         for d in downloads:
             name = d[9] or d[8] or 'ناشناس'
             group = f" در {d[10][:20]}" if d[10] else ""
-            text += f"• {name}{group} | {d[3]} | {d[5]} بایت\n"
+            text += f"• {name}{group} | {d[3]} | {d[5]} بایت | {d[11]}\n"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
     elif call.data == "reset_stats":
@@ -762,10 +841,10 @@ def handle_message(message):
     urls = extract_urls(text)
     
     if urls:
-        # اگه لینک پیدا کرد، اولین لینک رو دانلود کن
-        bot.reply_to(message, "✅ **لینک دریافت شد، دانلود شروع شد...**", parse_mode="Markdown")
+        platform = detect_platform(urls[0])
+        bot.reply_to(message, f"✅ **لینک {platform} دریافت شد، دانلود شروع شد...**", parse_mode="Markdown")
         is_group = message.chat.type in ['group', 'supergroup']
-        threading.Thread(target=download_video, args=(urls[0], chat_id, user_id, message.message_id, is_group)).start()
+        threading.Thread(target=download_video, args=(urls[0], chat_id, user_id, message, is_group)).start()
 
 # ================= پنل وب =================
 HTML_TEMPLATE = """
@@ -949,6 +1028,7 @@ HTML_TEMPLATE = """
         <table>
             <tr>
                 <th>کاربر</th>
+                <th>پلتفرم</th>
                 <th>فرمت</th>
                 <th>حجم</th>
                 <th>منبع</th>
@@ -957,9 +1037,10 @@ HTML_TEMPLATE = """
             {% for d in downloads %}
             <tr>
                 <td>{{ d[8] or d[9] or d[1] }}</td>
+                <td>{{ d[11] }}</td>
                 <td>{{ d[3] }}</td>
                 <td>{{ d[5] }} بایت</td>
-                <td>{{ '👥 گروه' if d[11] == 'group' else '👤 خصوصی' }}</td>
+                <td>{{ '👥 گروه' if d[10] == 'group' else '👤 خصوصی' }}</td>
                 <td>{{ d[6][:16] }}</td>
             </tr>
             {% endfor %}
@@ -1008,6 +1089,13 @@ if __name__ == "__main__":
 ║   🚀 راه‌اندازی ربات...   ║
 ╚══════════════════════════╝
     """)
+    
+    if not HAS_CURL_CFFI:
+        print("""
+⚠️ **هشدار تیک‌تاک:**
+   curl_cffi نصب نیست! برای دانلود تیک‌تاک باید نصب بشه:
+   pip install curl_cffi
+        """)
     
     # تنظیم webhook
     bot.remove_webhook()
