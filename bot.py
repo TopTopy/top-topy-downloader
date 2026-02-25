@@ -1,700 +1,168 @@
 # -*- coding: utf-8 -*-
 import os
 import threading
-from queue import Queue
-from datetime import datetime, timedelta
-import sqlite3
-from flask import Flask, request, redirect, render_template_string, jsonify
-import yt_dlp
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import time
 import logging
-import sys
-import signal
+from datetime import datetime
+from flask import Flask, request
+import telebot
+import yt_dlp
+import sqlite3
 
-# ================= تنظیمات لاگ =================
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log')
-    ]
-)
-logger = logging.getLogger(__name__)
-
-# ================= توکن و ادمین - مقادیر مستقیم =================
+# ================= تنظیمات ساده =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
+MAX_FILE_SIZE = 300 * 1024 * 1024  # 300 مگابایت
+DOWNLOAD_PATH = "downloads"
+WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
+PORT = int(os.environ.get('PORT', 8080))
 
-logger.info(f"✅ توکن: {TOKEN[:10]}...")
-logger.info(f"✅ ادمین: {ADMIN_ID}")
-
-# ================= تنظیمات =================
-class Config:
-    MAX_FILE_SIZE = 300 * 1024 * 1024  # 300 مگابایت
-    DOWNLOAD_PATH = "downloads"
-    WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
-    WEBHOOK_HOST = "0.0.0.0"
-    WEBHOOK_PORT = int(os.environ.get('PORT', 8080))
-    USE_WEBHOOK = True
-    DEBUG = False
-    
-    # تنظیمات عضویت اجباری - دو کانال
-    FORCE_JOIN_ENABLED = True
-    
-    FORCE_JOIN_CHANNEL_1 = "@top_topy_downloader"
-    FORCE_JOIN_CHANNEL_ID_1 = -1003828073352
-    
-    FORCE_JOIN_CHANNEL_2 = "@IdTOP_TOPY"
-    FORCE_JOIN_CHANNEL_ID_2 = -1003872568492
-    
-    FORCE_JOIN_MESSAGE = "🔒 **برای استفاده از ربات، باید در کانال‌های زیر عضو شوید:**\n\n{channels}\n\nبعد از عضویت، دکمه ✅ بررسی عضویت را بزنید."
-    
-    DAILY_LIMIT_ENABLED = False
-    DAILY_LIMIT_COUNT = 5
-
-config = Config()
-
-# ================= ایجاد پوشه‌ها =================
-os.makedirs(config.DOWNLOAD_PATH, exist_ok=True)
-os.makedirs("database", exist_ok=True)
-
-# ================= راه‌اندازی ربات =================
-bot = telebot.TeleBot(TOKEN, threaded=False)
+# ================= آماده‌سازی =================
+os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# ================= دیتابیس =================
-class Database:
-    def __init__(self, db_path='database/bot.db'):
-        self.db_path = db_path
-        self.lock = threading.Lock()
-        self.init_database()
-    
-    def get_connection(self):
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
-    
-    def init_database(self):
-        with self.lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_name TEXT,
-                last_name TEXT,
-                joined_date TIMESTAMP,
-                last_active TIMESTAMP,
-                blocked INTEGER DEFAULT 0,
-                downloads_count INTEGER DEFAULT 0,
-                is_admin INTEGER DEFAULT 0,
-                language TEXT DEFAULT 'fa',
-                daily_downloads INTEGER DEFAULT 0,
-                last_download_date TEXT,
-                joined_channel_1 INTEGER DEFAULT 0,
-                joined_channel_2 INTEGER DEFAULT 0,
-                warning_count INTEGER DEFAULT 0
-            )
-            """)
-            
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS stats (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                date TEXT UNIQUE,
-                total_downloads INTEGER DEFAULT 0,
-                total_users INTEGER DEFAULT 0,
-                active_users INTEGER DEFAULT 0,
-                total_blocked INTEGER DEFAULT 0
-            )
-            """)
-            
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-            """)
-            
-            cursor.execute("""
-            CREATE TABLE IF NOT EXISTS downloads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                url TEXT,
-                format TEXT,
-                title TEXT,
-                filesize INTEGER,
-                status TEXT,
-                timestamp TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(user_id)
-            )
-            """)
-            
-            default_settings = [
-                ('bot_status', 'ON'),
-                ('maintenance_mode', 'OFF'),
-                ('total_downloads', '0'),
-                ('total_users', '0'),
-                ('total_blocked', '0'),
-                ('force_join_enabled', str(config.FORCE_JOIN_ENABLED)),
-                ('daily_limit_enabled', str(config.DAILY_LIMIT_ENABLED)),
-                ('daily_limit_count', str(config.DAILY_LIMIT_COUNT)),
-                ('force_join_channel_1', config.FORCE_JOIN_CHANNEL_1),
-                ('force_join_channel_id_1', str(config.FORCE_JOIN_CHANNEL_ID_1)),
-                ('force_join_channel_2', config.FORCE_JOIN_CHANNEL_2),
-                ('force_join_channel_id_2', str(config.FORCE_JOIN_CHANNEL_ID_2)),
-                ('created_at', str(datetime.now()))
-            ]
-            
-            for key, value in default_settings:
-                cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
-            
-            cursor.execute("INSERT OR IGNORE INTO users (user_id, is_admin) VALUES (?, 1)", (ADMIN_ID,))
-            
-            conn.commit()
-            conn.close()
-            logger.info("✅ دیتابیس راه‌اندازی شد")
-            logger.info(f"✅ عضویت اجباری در: {config.FORCE_JOIN_CHANNEL_1} و {config.FORCE_JOIN_CHANNEL_2}")
-    
-    def execute(self, query, params=(), fetch_one=False, fetch_all=False):
-        with self.lock:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            try:
-                cursor.execute(query, params)
-                
-                if query.strip().upper().startswith('SELECT'):
-                    if fetch_one:
-                        result = cursor.fetchone()
-                    elif fetch_all:
-                        result = cursor.fetchall()
-                    else:
-                        result = cursor.fetchall()
-                else:
-                    conn.commit()
-                    result = cursor.lastrowid
-                
-                return result
-            except Exception as e:
-                logger.error(f"خطای دیتابیس: {e}")
-                conn.rollback()
-                raise
-            finally:
-                conn.close()
-    
-    def add_user(self, user_id, username=None, first_name=None, last_name=None):
-        now = datetime.now()
-        today = now.strftime('%Y-%m-%d')
-        
-        try:
-            user = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
-            
-            if user:
-                self.execute("UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
-                           (now, username, first_name, last_name, user_id))
-                
-                if user[10] != today:
-                    self.execute("UPDATE users SET daily_downloads = 0, last_download_date = ? WHERE user_id = ?", (today, user_id))
-            else:
-                self.execute("""
-                    INSERT INTO users (user_id, username, first_name, last_name, joined_date, last_active, blocked, downloads_count, is_admin, language, daily_downloads, last_download_date, joined_channel_1, joined_channel_2, warning_count)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 'fa', 0, ?, 0, 0, 0)
-                """, (user_id, username, first_name, last_name, now, now, 1 if user_id == ADMIN_ID else 0, today))
-                
-                date_str = now.strftime('%Y-%m-%d')
-                self.execute("INSERT INTO stats (date, total_users) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET total_users = total_users + 1", (date_str,))
-            
-            return True
-        except Exception as e:
-            logger.error(f"خطا در add_user: {e}")
-            return False
-    
-    def check_force_join(self, user_id):
-        enabled = self.execute("SELECT value FROM settings WHERE key = 'force_join_enabled'", fetch_one=True)
-        if not enabled or enabled[0] != 'True':
-            return True
-        
-        channel_id_1 = self.execute("SELECT value FROM settings WHERE key = 'force_join_channel_id_1'", fetch_one=True)
-        channel_1_ok = True
-        if channel_id_1:
-            try:
-                member = bot.get_chat_member(int(channel_id_1[0]), user_id)
-                status = member.status
-                channel_1_ok = status in ['member', 'administrator', 'creator']
-                if channel_1_ok:
-                    self.execute("UPDATE users SET joined_channel_1 = 1 WHERE user_id = ?", (user_id,))
-            except:
-                channel_1_ok = False
-        
-        channel_id_2 = self.execute("SELECT value FROM settings WHERE key = 'force_join_channel_id_2'", fetch_one=True)
-        channel_2_ok = True
-        if channel_id_2:
-            try:
-                member = bot.get_chat_member(int(channel_id_2[0]), user_id)
-                status = member.status
-                channel_2_ok = status in ['member', 'administrator', 'creator']
-                if channel_2_ok:
-                    self.execute("UPDATE users SET joined_channel_2 = 1 WHERE user_id = ?", (user_id,))
-            except:
-                channel_2_ok = False
-        
-        return channel_1_ok and channel_2_ok
-    
-    def check_daily_limit(self, user_id):
-        enabled = self.execute("SELECT value FROM settings WHERE key = 'daily_limit_enabled'", fetch_one=True)
-        if not enabled or enabled[0] != 'True':
-            return True
-        
-        limit = self.execute("SELECT value FROM settings WHERE key = 'daily_limit_count'", fetch_one=True)
-        if not limit:
-            return True
-        
-        user = self.execute("SELECT daily_downloads FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
-        return user and user[0] < int(limit[0])
-    
-    def increment_daily_download(self, user_id):
-        today = datetime.now().strftime('%Y-%m-%d')
-        self.execute("""
-            UPDATE users 
-            SET daily_downloads = daily_downloads + 1, last_download_date = ? 
-            WHERE user_id = ?
-        """, (today, user_id))
-    
-    def is_blocked(self, user_id):
-        result = self.execute("SELECT blocked FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
-        return result and result[0] == 1 if result else False
-    
-    def is_bot_on(self):
-        result = self.execute("SELECT value FROM settings WHERE key = 'bot_status'", fetch_one=True)
-        return result and result[0] == 'ON' if result else True
-    
-    def update_stats(self, user_id, url, fmt, title=None, filesize=None, status='success'):
-        now = datetime.now()
-        date_str = now.strftime('%Y-%m-%d')
-        
-        try:
-            self.execute("INSERT INTO downloads (user_id, url, format, title, filesize, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                       (user_id, url, fmt, title, filesize, status, now))
-            
-            self.execute("UPDATE users SET downloads_count = downloads_count + 1, last_active = ? WHERE user_id = ?", (now, user_id))
-            
-            self.increment_daily_download(user_id)
-            
-            self.execute("""
-                INSERT INTO stats (date, total_downloads) VALUES (?, 1) 
-                ON CONFLICT(date) DO UPDATE SET total_downloads = total_downloads + 1
-            """, (date_str,))
-            
-            self.execute("UPDATE settings SET value = value + 1 WHERE key = 'total_downloads'")
-            
-        except Exception as e:
-            logger.error(f"خطا در update_stats: {e}")
-    
-    def set_bot_status(self, status):
-        self.execute("UPDATE settings SET value = ? WHERE key = 'bot_status'", (status,))
+# ================= دیتابیس خیلی ساده =================
+conn = sqlite3.connect("database.db", check_same_thread=False)
+cursor = conn.cursor()
+cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, blocked INTEGER DEFAULT 0)")
+cursor.execute("CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, total INTEGER DEFAULT 0)")
+cursor.execute("INSERT OR IGNORE INTO stats (id, total) VALUES (1, 0)")
+conn.commit()
 
-db = Database()
-
-# ================= صف دانلود =================
-download_queue = Queue()
-
-def download_worker():
-    while True:
-        try:
-            task = download_queue.get()
-            if task:
-                chat_id, user_id, url, fmt, message_id = task
-                process_download_task(chat_id, user_id, url, fmt, message_id)
-            download_queue.task_done()
-        except Exception as e:
-            logger.error(f"خطا در worker: {e}")
-        time.sleep(1)
-
-for i in range(3):
-    threading.Thread(target=download_worker, daemon=True).start()
-
-def process_download_task(chat_id, user_id, url, fmt, status_message_id):
+# ================= تابع دانلود =================
+def download_video(url, chat_id):
     try:
-        if db.is_blocked(user_id):
-            bot.edit_message_text("⛔ شما بلاک هستید.", chat_id, status_message_id)
-            return
-        
-        if not db.is_bot_on():
-            bot.edit_message_text("⛔ ربات خاموش است.", chat_id, status_message_id)
-            return
-        
-        if not db.check_daily_limit(user_id):
-            limit = db.execute("SELECT value FROM settings WHERE key = 'daily_limit_count'", fetch_one=True)
-            bot.edit_message_text(f"❌ شما به محدودیت دانلود روزانه ({limit[0]} فایل) رسیده‌اید.", chat_id, status_message_id)
-            return
-        
+        # تنظیمات ساده برای همه سایت‌ها
         ydl_opts = {
+            'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
             'quiet': True,
             'no_warnings': True,
-            'extract_flat': False,
-            'outtmpl': f'{config.DOWNLOAD_PATH}/%(title)s.%(ext)s',
-            'format': 'best[filesize<300M]' if fmt == 'mp4' else 'bestaudio/best',
-            'socket_timeout': 30,
-            'retries': 3,
-            'fragment_retries': 3,
+            'format': 'best[filesize<300M]',
             'ignoreerrors': True,
-            'no_color': True,
         }
         
-        if fmt == 'mp3':
-            ydl_opts['postprocessors'] = [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            }]
-            ydl_opts['format'] = 'bestaudio/best'
-        elif fmt == 'best':
-            ydl_opts['format'] = 'best[filesize<300M]'
-        
-        bot.edit_message_text("⏳ در حال دریافت اطلاعات...", chat_id, status_message_id)
+        bot.send_message(chat_id, "⏳ دارم دانلود میکنم...")
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            title = info.get('title', 'Unknown')
-            extractor = info.get('extractor', 'unknown')
+            filename = ydl.prepare_filename(info)
             
-            logger.info(f"📥 دانلود از {extractor}: {title}")
+            # اگه فایل mp3 خواسته باشیم
+            if 'mp3' in url.lower() or 'audio' in url.lower():
+                ydl_opts = {
+                    'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
+                    'quiet': True,
+                    'format': 'bestaudio/best',
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                    }],
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl2:
+                    info = ydl2.extract_info(url, download=True)
+                    filename = filename.replace('.webm', '.mp3').replace('.m4a', '.mp3')
             
-            filename = None
-            if fmt == 'mp3':
-                possible_filename = f"{config.DOWNLOAD_PATH}/{title}.mp3"
-                if os.path.exists(possible_filename):
-                    filename = possible_filename
-                else:
-                    for f in os.listdir(config.DOWNLOAD_PATH):
-                        if f.endswith('.mp3') and title in f:
-                            filename = os.path.join(config.DOWNLOAD_PATH, f)
-                            break
-            else:
-                filename = ydl.prepare_filename(info)
-                if not os.path.exists(filename):
-                    for f in os.listdir(config.DOWNLOAD_PATH):
-                        if title in f:
-                            filename = os.path.join(config.DOWNLOAD_PATH, f)
-                            break
-            
-            if filename and os.path.exists(filename):
-                filesize = os.path.getsize(filename)
+            # ارسال فایل
+            if os.path.exists(filename):
+                with open(filename, 'rb') as f:
+                    if filename.endswith('.mp3'):
+                        bot.send_audio(chat_id, f, caption="🎵 دانلود شد")
+                    elif filename.endswith(('.mp4', '.mkv')):
+                        bot.send_video(chat_id, f, caption="🎬 دانلود شد")
+                    elif filename.endswith(('.jpg', '.png', '.gif')):
+                        bot.send_photo(chat_id, f, caption="🖼️ دانلود شد")
+                    else:
+                        bot.send_document(chat_id, f, caption="📄 دانلود شد")
                 
-                if filesize <= config.MAX_FILE_SIZE:
-                    bot.edit_message_text("📤 در حال آپلود...", chat_id, status_message_id)
-                    
-                    with open(filename, 'rb') as f:
-                        if fmt == 'mp3' or filename.endswith(('.mp3', '.m4a', '.ogg')):
-                            bot.send_audio(chat_id, f, caption=f"🎵 {title}", title=title, performer="YouTube", duration=info.get('duration', 0))
-                        elif filename.endswith(('.mp4', '.mkv', '.webm')):
-                            bot.send_video(chat_id, f, caption=f"🎬 {title}", duration=info.get('duration', 0))
-                        elif filename.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
-                            bot.send_photo(chat_id, f, caption=f"🖼️ {title}")
-                        else:
-                            bot.send_document(chat_id, f, caption=f"📄 {title}")
-                    
-                    db.update_stats(user_id, url, fmt, title, filesize)
-                    bot.delete_message(chat_id, status_message_id)
-                else:
-                    bot.edit_message_text(f"❌ حجم فایل بیشتر از {config.MAX_FILE_SIZE // (1024*1024)} مگابایت است.", chat_id, status_message_id)
+                # آپدیت آمار
+                cursor.execute("UPDATE stats SET total = total + 1 WHERE id = 1")
+                conn.commit()
                 
-                try:
-                    os.remove(filename)
-                except:
-                    pass
+                # پاک کردن فایل
+                os.remove(filename)
             else:
-                bot.edit_message_text("❌ فایل پیدا نشد.", chat_id, status_message_id)
-    
+                bot.send_message(chat_id, "❌ فایل پیدا نشد")
+                
     except Exception as e:
-        bot.edit_message_text(f"❌ خطا: {str(e)[:100]}", chat_id, status_message_id)
-        logger.error(f"خطای دانلود: {e}")
+        bot.send_message(chat_id, f"❌ خطا: {str(e)[:100]}")
 
 # ================= دستورات ربات =================
 @bot.message_handler(commands=['start'])
-def start_command(message):
+def start(message):
     user_id = message.from_user.id
-    username = message.from_user.username
-    first_name = message.from_user.first_name
-    last_name = message.from_user.last_name
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
     
-    db.add_user(user_id, username, first_name, last_name)
-    
-    if not db.check_force_join(user_id):
-        channel_1 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_1'", fetch_one=True)
-        channel_2 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_2'", fetch_one=True)
-        
-        channel_link_1 = f"https://t.me/{channel_1[0].replace('@', '')}" if channel_1 else ""
-        channel_link_2 = f"https://t.me/{channel_2[0].replace('@', '')}" if channel_2 else ""
-        
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("📢 کانال اول", url=channel_link_1),
-            InlineKeyboardButton("📢 کانال دوم", url=channel_link_2)
-        )
-        markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
-        
-        channels_text = f"1️⃣ {channel_1[0]}\n2️⃣ {channel_2[0]}"
-        force_msg = config.FORCE_JOIN_MESSAGE.format(channels=channels_text)
-        
-        bot.reply_to(message, force_msg, reply_markup=markup, parse_mode="Markdown")
-        return
-    
-    welcome_text = """
+    welcome = """
 🎬 **ربات دانلود از همه سایت‌ها**
 
-🔹 لینک هر ویدیو، عکس، فایل یا موزیک رو بفرست
-🔹 پشتیبانی از یوتیوب، اینستاگرام، تیک‌تاک، توییتر و هزاران سایت دیگر
-🔹 حداکثر حجم: ۳۰۰ مگابایت
+🔹 لینک بفرست تا خودم تشخیص بدم چی هست
+🔹 یوتیوب، اینستاگرام، تیک‌تاک، توییتر، هر چی
+🔹 حجم تا ۳۰۰ مگابایت
 
-🚀 **نحوه استفاده:**
-1️⃣ لینک رو بفرست
-2️⃣ فرمت مورد نظر رو انتخاب کن
-3️⃣ منتظر دانلود بمون
+✅ فقط لینک رو بفرست، بقیه با من
     """
-    
-    bot.reply_to(message, welcome_text, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data == "check_join")
-def check_join_callback(call):
-    user_id = call.from_user.id
-    
-    if db.check_force_join(user_id):
-        bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
-        bot.edit_message_text("✅ عضویت شما تأیید شد. حالا می‌تونید از ربات استفاده کنید.", call.message.chat.id, call.message.message_id)
-        
-        welcome_text = """
-🎬 **ربات دانلود از همه سایت‌ها**
-
-🔹 لینک هر ویدیو، عکس، فایل یا موزیک رو بفرست
-🔹 پشتیبانی از یوتیوب، اینستاگرام، تیک‌تاک، توییتر و هزاران سایت دیگر
-🔹 حداکثر حجم: ۳۰۰ مگابایت
-
-🚀 **نحوه استفاده:**
-1️⃣ لینک رو بفرست
-2️⃣ فرمت مورد نظر رو انتخاب کن
-3️⃣ منتظر دانلود بمون
-        """
-        bot.send_message(user_id, welcome_text, parse_mode="Markdown")
-    else:
-        bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
+    bot.reply_to(message, welcome, parse_mode="Markdown")
 
 @bot.message_handler(commands=['admin'])
-def admin_command(message):
+def admin(message):
     if message.from_user.id != ADMIN_ID:
         return
     
-    stats = db.get_stats()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    users = cursor.fetchone()[0]
+    cursor.execute("SELECT total FROM stats WHERE id = 1")
+    downloads = cursor.fetchone()[0]
     
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🟢 روشن", callback_data="admin_on"),
-        InlineKeyboardButton("🔴 خاموش", callback_data="admin_off"),
-        InlineKeyboardButton("📊 آمار", callback_data="admin_stats"),
-        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast")
-    )
-    
-    status_text = f"""
-👑 **پنل مدیریت**
-
-📊 **آمار:**
-👥 کل کاربران: {stats['total_users']}
-📥 کل دانلودها: {stats['total_downloads']}
-🔒 بلاک شده: {stats['blocked_users']}
-🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
-
-لطفاً یکی از گزینه‌ها رو انتخاب کن:
+    text = f"""
+👑 **پنل ادمین**
+👥 کاربران: {users}
+📥 دانلودها: {downloads}
     """
-    
-    bot.send_message(message.chat.id, status_text, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
-def admin_callback(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
-        return
-    
-    action = call.data.replace('admin_', '')
-    
-    if action == "on":
-        db.set_bot_status('ON')
-        bot.answer_callback_query(call.id, "✅ ربات روشن شد")
-        bot.edit_message_text("✅ ربات روشن شد", call.message.chat.id, call.message.message_id)
-    
-    elif action == "off":
-        db.set_bot_status('OFF')
-        bot.answer_callback_query(call.id, "✅ ربات خاموش شد")
-        bot.edit_message_text("✅ ربات خاموش شد", call.message.chat.id, call.message.message_id)
-    
-    elif action == "stats":
-        stats = db.get_stats()
-        text = f"""
-📊 **آمار کامل**
-
-👥 کل کاربران: {stats['total_users']}
-📥 کل دانلودها: {stats['total_downloads']}
-🔒 بلاک شده: {stats['blocked_users']}
-🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
-        """
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    
-    elif action == "broadcast":
-        bot.edit_message_text("📢 متن پیام رو بفرست:", call.message.chat.id, call.message.message_id)
-        bot.register_next_step_handler(call.message, broadcast_handler)
-
-def broadcast_handler(message):
-    msg_text = message.text
-    users = db.execute("SELECT user_id, blocked FROM users", fetch_all=True)
-    
-    status_msg = bot.reply_to(message, "📤 در حال ارسال...")
-    
-    sent = 0
-    failed = 0
-    
-    for user in users:
-        if not user[1]:
-            try:
-                bot.send_message(user[0], f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
-                sent += 1
-            except:
-                failed += 1
-            time.sleep(0.05)
-    
-    bot.edit_message_text(f"✅ ارسال شد: {sent}\n❌ ناموفق: {failed}", status_msg.chat.id, status_msg.message_id)
+    bot.reply_to(message, text, parse_mode="Markdown")
 
 @bot.message_handler(func=lambda m: True)
 def handle_message(message):
     url = message.text.strip()
     user_id = message.from_user.id
     
-    db.add_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name)
-    
-    if not db.check_force_join(user_id):
-        channel_1 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_1'", fetch_one=True)
-        channel_2 = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel_2'", fetch_one=True)
-        
-        channel_link_1 = f"https://t.me/{channel_1[0].replace('@', '')}" if channel_1 else ""
-        channel_link_2 = f"https://t.me/{channel_2[0].replace('@', '')}" if channel_2 else ""
-        
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("📢 کانال اول", url=channel_link_1),
-            InlineKeyboardButton("📢 کانال دوم", url=channel_link_2)
-        )
-        markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
-        
-        channels_text = f"1️⃣ {channel_1[0]}\n2️⃣ {channel_2[0]}"
-        force_msg = config.FORCE_JOIN_MESSAGE.format(channels=channels_text)
-        
-        bot.reply_to(message, force_msg, reply_markup=markup, parse_mode="Markdown")
+    # بررسی بلاک بودن
+    cursor.execute("SELECT blocked FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    if result and result[0] == 1:
+        bot.reply_to(message, "⛔ شما بلاک هستید")
         return
     
+    # بررسی لینک
     if not url.startswith(('http://', 'https://')):
-        bot.reply_to(message, "❌ لینک معتبر بفرست.")
+        bot.reply_to(message, "❌ لینک معتبر بفرست")
         return
     
-    if db.is_blocked(user_id):
-        bot.reply_to(message, "⛔ شما بلاک هستید.")
-        return
-    
-    if not db.is_bot_on():
-        bot.reply_to(message, "⛔ ربات خاموش است.")
-        return
-    
-    try:
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
-            info = ydl.extract_info(url, download=False)
-            extractor = info.get('extractor', 'unknown')
-            title = info.get('title', 'Unknown')
-            
-            markup = InlineKeyboardMarkup(row_width=2)
-            markup.add(
-                InlineKeyboardButton("🎵 MP3", callback_data=f"dl_mp3_{url}"),
-                InlineKeyboardButton("🎬 MP4", callback_data=f"dl_mp4_{url}"),
-                InlineKeyboardButton("📥 بهترین", callback_data=f"dl_best_{url}")
-            )
-            
-            bot.reply_to(message, f"🔍 {extractor}\n📌 {title[:50]}...", reply_markup=markup)
-    except:
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("🎵 MP3", callback_data=f"dl_mp3_{url}"),
-            InlineKeyboardButton("🎬 MP4", callback_data=f"dl_mp4_{url}")
-        )
-        bot.reply_to(message, "📥 فرمت رو انتخاب کن:", reply_markup=markup)
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith('dl_'))
-def download_callback(call):
-    try:
-        parts = call.data.split('_', 2)
-        if len(parts) < 3:
-            bot.answer_callback_query(call.id, "❌ خطا")
-            return
-            
-        fmt = parts[1]
-        url = parts[2]
-        
-        status_msg = bot.send_message(call.message.chat.id, "⏳ اضافه به صف...")
-        
-        task = (call.message.chat.id, call.from_user.id, url, fmt, status_msg.message_id)
-        download_queue.put(task)
-        
-        bot.edit_message_text(f"✅ در صف: {download_queue.qsize()}", call.message.chat.id, status_msg.message_id)
-        bot.answer_callback_query(call.id, "✅ ثبت شد")
-        
-    except Exception as e:
-        bot.answer_callback_query(call.id, f"❌ خطا")
+    # شروع دانلود در thread جدا
+    threading.Thread(target=download_video, args=(url, message.chat.id)).start()
+    bot.reply_to(message, "✅ لینک دریافت شد، دانلود شروع شد")
 
 # ================= Webhook =================
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        try:
-            json_string = request.get_data().decode('utf-8')
-            update = telebot.types.Update.de_json(json_string)
-            bot.process_new_updates([update])
-            return 'OK', 200
-        except Exception as e:
-            logger.error(f"خطا: {e}")
-            return 'Error', 500
-    return 'Invalid request', 403
-
-@app.route('/test', methods=['GET'])
-def test():
-    return "ربات فعال است!", 200
+    json_str = request.get_data().decode('utf-8')
+    update = telebot.types.Update.de_json(json_str)
+    bot.process_new_updates([update])
+    return 'OK', 200
 
 @app.route('/')
 def home():
-    return "ربات دانلود - فعال"
+    return "ربات فعال است 🚀"
 
-def setup_webhook():
-    try:
-        bot.remove_webhook()
-        time.sleep(1)
-        success = bot.set_webhook(url=config.WEBHOOK_URL)
-        
-        if success:
-            logger.info(f"✅ Webhook تنظیم شد")
-            return True
-        return False
-    except Exception as e:
-        logger.error(f"❌ خطا: {e}")
-        return False
-
-def signal_handler(sig, frame):
-    logger.info("🛑 خروج...")
-    sys.exit(0)
-
+# ================= شروع =================
 if __name__ == "__main__":
-    signal.signal(signal.SIGINT, signal_handler)
+    # تنظیم webhook
+    bot.remove_webhook()
+    time.sleep(1)
+    bot.set_webhook(url=WEBHOOK_URL)
+    print("✅ Webhook تنظیم شد")
+    print(f"🚀 ربات روی پورت {PORT} اجرا شد")
     
-    logger.info("🚀 راه‌اندازی ربات...")
-    
-    if setup_webhook():
-        logger.info("✅ Webhook فعال شد")
-    
-    app.run(host='0.0.0.0', port=config.WEBHOOK_PORT, debug=False, threaded=True)
+    # اجرا
+    app.run(host='0.0.0.0', port=PORT)
