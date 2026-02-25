@@ -4,235 +4,1270 @@ import threading
 from queue import Queue
 from datetime import datetime
 import sqlite3
-from flask import Flask, request, redirect
+from flask import Flask, request, redirect, render_template_string
 import yt_dlp
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from Crypto.Cipher import AES
+from Crypto.Util.Padding import unpad
 import base64
+import time
+import logging
+import sys
+import signal
 
-# ================= کلید AES =================
-SECRET_KEY = b"16bytesecretkey!"  # 16 بایت کلید
+# ================= تنظیمات لاگ =================
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO,
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('bot.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
-# ================= توکن و ادمین هش شده =================
-ENCODED_TOKEN = "s4u4OyNNf5uZQO/5jhBmlb3/KD7VpHTlCFe9gD57Rfo="  # هش شده توکن واقعی
-ENCODED_ADMIN = "ODIyNjA5MTI5Mg=="  # هش شده ایدی ادمین
+# ================= تنظیمات اصلی =================
+class Config:
+    # کلید AES
+    SECRET_KEY = b"16bytesecretkey!"
+    
+    # توکن و ادمین - مقادیر واقعی
+    BOT_TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
+    ADMIN_ID = 8226091292
+    
+    # تنظیمات دانلود
+    MAX_FILE_SIZE = 300 * 1024 * 1024  # 300 مگابایت
+    DOWNLOAD_PATH = "downloads"
+    
+    # تنظیمات وب‌هوک - در هاست واقعی تغییر بده
+    WEBHOOK_URL = "https://your-domain.com/webhook"  # برای Railway, Koyeb, و غیره
+    WEBHOOK_HOST = "0.0.0.0"
+    WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
+    
+    # حالت اجرا
+    USE_WEBHOOK = False  # برای تست محلی False باشه، برای هاست True
+    DEBUG = False
 
-def decrypt_aes(enc_str):
-    cipher = AES.new(SECRET_KEY, AES.MODE_ECB)
-    decoded = base64.b64decode(enc_str)
-    decrypted = cipher.decrypt(decoded)
-    return decrypted.rstrip(b"\0").decode()
+config = Config()
 
-TOKEN = decrypt_aes(ENCODED_TOKEN)
-ADMIN_ID = int(decrypt_aes(ENCODED_ADMIN))
+# ================= توکن نهایی =================
+TOKEN = config.BOT_TOKEN
+ADMIN_ID = config.ADMIN_ID
+logger.info(f"✅ توکن: {TOKEN[:10]}...")
+logger.info(f"✅ ادمین: {ADMIN_ID}")
 
-# ================= تنظیمات =================
-MAX_FILE_SIZE = 300 * 1024 * 1024
-DOWNLOAD_PATH = "downloads"
-WEBHOOK_URL = "https://YOUR_DOMAIN_OR_NGROK/webhook"  # HTTPS الزامیست
+# ================= ایجاد پوشه‌ها =================
+os.makedirs(config.DOWNLOAD_PATH, exist_ok=True)
+os.makedirs("database", exist_ok=True)
 
-bot = telebot.TeleBot(TOKEN, threaded=True)
+# ================= راه‌اندازی ربات =================
+bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
 
-if not os.path.exists(DOWNLOAD_PATH):
-    os.makedirs(DOWNLOAD_PATH)
+# ================= دیتابیس داخلی =================
+class Database:
+    def __init__(self, db_path='database/bot.db'):
+        self.db_path = db_path
+        self.conn = None
+        self.cursor = None
+        self.lock = threading.Lock()
+        self.init_database()
+    
+    def get_connection(self):
+        """ایجاد connection جدید با timeout"""
+        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        return conn
+    
+    def init_database(self):
+        """ایجاد جداول دیتابیس"""
+        with self.lock:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            # جدول کاربران
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                username TEXT,
+                first_name TEXT,
+                last_name TEXT,
+                joined_date TIMESTAMP,
+                last_active TIMESTAMP,
+                blocked INTEGER DEFAULT 0,
+                downloads_count INTEGER DEFAULT 0
+            )
+            """)
+            
+            # جدول آمار
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS stats (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE,
+                total_downloads INTEGER DEFAULT 0,
+                total_users INTEGER DEFAULT 0,
+                active_users INTEGER DEFAULT 0
+            )
+            """)
+            
+            # جدول تنظیمات
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """)
+            
+            # جدول دانلودها
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS downloads (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER,
+                url TEXT,
+                format TEXT,
+                title TEXT,
+                filesize INTEGER,
+                status TEXT,
+                timestamp TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(user_id)
+            )
+            """)
+            
+            # تنظیمات پیش‌فرض
+            default_settings = [
+                ('bot_status', 'ON'),
+                ('maintenance_mode', 'OFF'),
+                ('total_downloads', '0'),
+                ('total_users', '0'),
+                ('created_at', str(datetime.now()))
+            ]
+            
+            for key, value in default_settings:
+                cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+            
+            conn.commit()
+            conn.close()
+            logger.info("✅ دیتابیس راه‌اندازی شد")
+    
+    def execute(self, query, params=(), fetch_one=False, fetch_all=False):
+        """اجرای کوئری با مدیریت خودکار connection"""
+        with self.lock:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            try:
+                cursor.execute(query, params)
+                
+                if query.strip().upper().startswith('SELECT'):
+                    if fetch_one:
+                        result = cursor.fetchone()
+                    elif fetch_all:
+                        result = cursor.fetchall()
+                    else:
+                        result = cursor.fetchall()
+                else:
+                    conn.commit()
+                    result = cursor.lastrowid
+                
+                return result
+            except Exception as e:
+                logger.error(f"خطای دیتابیس: {e}")
+                conn.rollback()
+                raise
+            finally:
+                conn.close()
+    
+    def add_user(self, user_id, username=None, first_name=None, last_name=None):
+        """افزودن کاربر جدید"""
+        now = datetime.now()
+        try:
+            # بررسی وجود کاربر
+            user = self.execute(
+                "SELECT * FROM users WHERE user_id = ?", 
+                (user_id,), 
+                fetch_one=True
+            )
+            
+            if user:
+                # آپدیت آخرین فعالیت
+                self.execute(
+                    "UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
+                    (now, username, first_name, last_name, user_id)
+                )
+            else:
+                # افزودن کاربر جدید
+                self.execute("""
+                    INSERT INTO users (user_id, username, first_name, last_name, joined_date, last_active, blocked, downloads_count)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0)
+                """, (user_id, username, first_name, last_name, now, now))
+                
+                # آپدیت آمار
+                date_str = now.strftime('%Y-%m-%d')
+                self.execute("""
+                    INSERT INTO stats (date, total_users) 
+                    VALUES (?, 1) 
+                    ON CONFLICT(date) DO UPDATE SET total_users = total_users + 1
+                """, (date_str,))
+            
+            return True
+        except Exception as e:
+            logger.error(f"خطا در add_user: {e}")
+            return False
+    
+    def is_blocked(self, user_id):
+        """بررسی بلاک بودن کاربر"""
+        result = self.execute(
+            "SELECT blocked FROM users WHERE user_id = ?", 
+            (user_id,), 
+            fetch_one=True
+        )
+        return result and result[0] == 1 if result else False
+    
+    def is_bot_on(self):
+        """بررسی روشن بودن ربات"""
+        result = self.execute(
+            "SELECT value FROM settings WHERE key = 'bot_status'", 
+            fetch_one=True
+        )
+        return result and result[0] == 'ON' if result else True
+    
+    def update_stats(self, user_id, url, fmt, title=None, filesize=None, status='success'):
+        """آپدیت آمار دانلود"""
+        now = datetime.now()
+        date_str = now.strftime('%Y-%m-%d')
+        
+        try:
+            # ثبت دانلود
+            self.execute("""
+                INSERT INTO downloads (user_id, url, format, title, filesize, status, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (user_id, url, fmt, title, filesize, status, now))
+            
+            # آپدیت تعداد دانلودهای کاربر
+            self.execute("""
+                UPDATE users SET downloads_count = downloads_count + 1, last_active = ?
+                WHERE user_id = ?
+            """, (now, user_id))
+            
+            # آپدیت آمار روزانه
+            self.execute("""
+                INSERT INTO stats (date, total_downloads) 
+                VALUES (?, 1) 
+                ON CONFLICT(date) DO UPDATE SET total_downloads = total_downloads + 1
+            """, (date_str,))
+            
+            # آپدیت تنظیمات کل
+            self.execute("""
+                UPDATE settings SET value = value + 1 
+                WHERE key = 'total_downloads'
+            """)
+            
+        except Exception as e:
+            logger.error(f"خطا در update_stats: {e}")
+    
+    def get_stats(self):
+        """گرفتن آمار کلی"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # کل کاربران
+        total_users = self.execute(
+            "SELECT COUNT(*) as count FROM users", 
+            fetch_one=True
+        )
+        
+        # کاربران فعال امروز
+        today_active = self.execute(
+            "SELECT COUNT(*) as count FROM users WHERE date(last_active) = date('now')",
+            fetch_one=True
+        )
+        
+        # کاربران بلاک شده
+        blocked_users = self.execute(
+            "SELECT COUNT(*) as count FROM users WHERE blocked = 1",
+            fetch_one=True
+        )
+        
+        # کل دانلودها
+        total_downloads = self.execute(
+            "SELECT value FROM settings WHERE key = 'total_downloads'",
+            fetch_one=True
+        )
+        
+        # دانلودهای امروز
+        today_downloads = self.execute(
+            "SELECT total_downloads FROM stats WHERE date = ?",
+            (today,),
+            fetch_one=True
+        )
+        
+        return {
+            'total_users': total_users[0] if total_users else 0,
+            'today_active': today_active[0] if today_active else 0,
+            'blocked_users': blocked_users[0] if blocked_users else 0,
+            'total_downloads': int(total_downloads[0]) if total_downloads else 0,
+            'today_downloads': today_downloads[0] if today_downloads else 0
+        }
+    
+    def set_bot_status(self, status):
+        """تغییر وضعیت ربات"""
+        self.execute(
+            "UPDATE settings SET value = ? WHERE key = 'bot_status'",
+            (status,)
+        )
+    
+    def block_user(self, user_id):
+        """بلاک کردن کاربر"""
+        self.execute(
+            "UPDATE users SET blocked = 1 WHERE user_id = ?",
+            (user_id,)
+        )
+    
+    def unblock_user(self, user_id):
+        """آنبلاک کردن کاربر"""
+        self.execute(
+            "UPDATE users SET blocked = 0 WHERE user_id = ?",
+            (user_id,)
+        )
+    
+    def get_users(self, limit=50, blocked_only=False):
+        """گرفتن لیست کاربران"""
+        query = "SELECT * FROM users"
+        params = []
+        
+        if blocked_only:
+            query += " WHERE blocked = 1"
+        
+        query += " ORDER BY last_active DESC LIMIT ?"
+        params.append(limit)
+        
+        return self.execute(query, params, fetch_all=True)
+    
+    def get_recent_downloads(self, limit=20):
+        """گرفتن آخرین دانلودها"""
+        return self.execute("""
+            SELECT d.*, u.username, u.first_name 
+            FROM downloads d
+            LEFT JOIN users u ON d.user_id = u.user_id
+            ORDER BY d.timestamp DESC
+            LIMIT ?
+        """, (limit,), fetch_all=True)
 
-# ================= دیتابیس =================
-conn = sqlite3.connect("database.db", check_same_thread=False)
-cursor = conn.cursor()
-
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    blocked INTEGER DEFAULT 0
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS stats (
-    total_downloads INTEGER DEFAULT 0,
-    today_downloads INTEGER DEFAULT 0,
-    last_date TEXT
-)
-""")
-cursor.execute("""
-CREATE TABLE IF NOT EXISTS settings (
-    bot_status TEXT
-)
-""")
-cursor.execute("SELECT COUNT(*) FROM settings")
-if cursor.fetchone()[0] == 0:
-    cursor.execute("INSERT INTO settings VALUES ('ON')")
-    cursor.execute("INSERT INTO stats VALUES (0,0,?)", (str(datetime.now().date()),))
-conn.commit()
+# ================= ایجاد دیتابیس =================
+db = Database()
 
 # ================= صف دانلود =================
 download_queue = Queue()
-def worker():
+active_downloads = {}
+
+# ================= Worker برای دانلود =================
+def download_worker():
+    """Worker برای پردازش صف دانلود"""
     while True:
-        call, url, fmt = download_queue.get()
-        process_download(call, url, fmt)
-        download_queue.task_done()
+        try:
+            task = download_queue.get()
+            if task:
+                chat_id, user_id, url, fmt, message_id = task
+                process_download_task(chat_id, user_id, url, fmt, message_id)
+            download_queue.task_done()
+        except Exception as e:
+            logger.error(f"خطا در worker: {e}")
+        time.sleep(1)
 
-for _ in range(2):
-    threading.Thread(target=worker, daemon=True).start()
+# شروع workerها
+for i in range(3):
+    threading.Thread(target=download_worker, daemon=True).start()
 
-# ================= توابع کمکی =================
-def is_bot_on():
-    cursor.execute("SELECT bot_status FROM settings")
-    return cursor.fetchone()[0] == "ON"
-
-def add_user(user_id):
-    cursor.execute("INSERT OR IGNORE INTO users VALUES (?,0)", (user_id,))
-    conn.commit()
-
-def update_stats():
-    today = str(datetime.now().date())
-    cursor.execute("SELECT total_downloads, today_downloads, last_date FROM stats")
-    total, today_count, last_date = cursor.fetchone()
-    if last_date != today:
-        today_count = 0
-    cursor.execute("UPDATE stats SET total_downloads=?, today_downloads=?, last_date=?",
-                   (total+1, today_count+1, today))
-    conn.commit()
-
-# ================= دانلود =================
-def process_download(call, url, fmt):
-    chat_id = call.message.chat.id
-    cursor.execute("SELECT blocked FROM users WHERE user_id=?", (call.from_user.id,))
-    blocked = cursor.fetchone()[0]
-    if blocked:
-        bot.send_message(chat_id, "⛔ شما بلاک هستید.")
-        return
-    if not is_bot_on():
-        bot.send_message(chat_id, "⛔ ربات خاموش است.")
-        return
-    bot.send_message(chat_id, "⏳ در حال دانلود...")
+def process_download_task(chat_id, user_id, url, fmt, status_message_id):
+    """پردازش دانلود"""
     try:
-        if fmt == "mp3":
-            ydl_opts = {
-                'format': 'bestaudio',
-                'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
-                'postprocessors': [{'key': 'FFmpegExtractAudio','preferredcodec':'mp3'}],
-                'quiet': True
-            }
-        else:
-            ydl_opts = {
-                'format': fmt,
-                'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
-                'quiet': True
-            }
+        # بررسی وضعیت
+        if db.is_blocked(user_id):
+            bot.edit_message_text("⛔ شما بلاک هستید.", chat_id, status_message_id)
+            return
+        
+        if not db.is_bot_on():
+            bot.edit_message_text("⛔ ربات خاموش است.", chat_id, status_message_id)
+            return
+        
+        # گزینه‌های yt-dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'extract_flat': False,
+            'outtmpl': f'{config.DOWNLOAD_PATH}/%(title)s.%(ext)s',
+            'format': 'best[filesize<300M]' if fmt == 'mp4' else 'bestaudio/best',
+        }
+        
+        if fmt == 'mp3':
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
+        
+        bot.edit_message_text("⏳ در حال دریافت اطلاعات...", chat_id, status_message_id)
+        
+        # دانلود
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            file_path = ydl.prepare_filename(info)
-        if os.path.exists(file_path):
-            if os.path.getsize(file_path) <= MAX_FILE_SIZE:
-                with open(file_path, "rb") as f:
-                    bot.send_document(chat_id, f)
-                update_stats()
+            title = info.get('title', 'Unknown')
+            
+            # پیدا کردن فایل
+            if fmt == 'mp3':
+                filename = f"{config.DOWNLOAD_PATH}/{title}.mp3"
             else:
-                bot.send_message(chat_id, "❌ فایل بیشتر از ۳۰۰MB است.")
-            os.remove(file_path)
+                filename = ydl.prepare_filename(info)
+            
+            # بررسی وجود فایل
+            if not os.path.exists(filename):
+                for f in os.listdir(config.DOWNLOAD_PATH):
+                    if title in f:
+                        filename = os.path.join(config.DOWNLOAD_PATH, f)
+                        break
+            
+            if os.path.exists(filename):
+                filesize = os.path.getsize(filename)
+                
+                if filesize <= config.MAX_FILE_SIZE:
+                    bot.edit_message_text("📤 در حال آپلود...", chat_id, status_message_id)
+                    
+                    # ارسال فایل
+                    with open(filename, 'rb') as f:
+                        if fmt == 'mp3':
+                            bot.send_audio(
+                                chat_id, f, 
+                                caption=f"🎵 {title}",
+                                title=title,
+                                performer="YouTube",
+                                duration=info.get('duration', 0)
+                            )
+                        else:
+                            bot.send_video(
+                                chat_id, f,
+                                caption=f"🎬 {title}",
+                                duration=info.get('duration', 0),
+                                width=info.get('width', 0),
+                                height=info.get('height', 0)
+                            )
+                    
+                    # آپدیت آمار
+                    db.update_stats(user_id, url, fmt, title, filesize)
+                    
+                    bot.delete_message(chat_id, status_message_id)
+                else:
+                    bot.edit_message_text("❌ حجم فایل بیشتر از ۳۰۰ مگابایت است.", chat_id, status_message_id)
+                
+                # پاک کردن فایل
+                try:
+                    os.remove(filename)
+                except:
+                    pass
+            else:
+                bot.edit_message_text("❌ فایل پیدا نشد.", chat_id, status_message_id)
+    
+    except yt_dlp.utils.DownloadError as e:
+        bot.edit_message_text(f"❌ خطای دانلود: {str(e)[:100]}", chat_id, status_message_id)
     except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا:\n{e}")
+        bot.edit_message_text(f"❌ خطا: {str(e)[:100]}", chat_id, status_message_id)
+        logger.error(f"خطای دانلود: {e}")
 
-# ================= دستورات =================
+# ================= دستورات ربات =================
 @bot.message_handler(commands=['start'])
-def start(message):
-    add_user(message.from_user.id)
-    bot.reply_to(message, "👋 لینک رو بفرست.")
+def start_command(message):
+    user_id = message.from_user.id
+    username = message.from_user.username
+    first_name = message.from_user.first_name
+    last_name = message.from_user.last_name
+    
+    db.add_user(user_id, username, first_name, last_name)
+    
+    welcome_text = """
+🎬 **ربات دانلود یوتیوب**
+
+🔹 لینک ویدیو از یوتیوب رو بفرست تا بتونی دانلود کنی
+🔹 پشتیبانی از MP3 و MP4
+🔹 حداکثر حجم: ۳۰۰ مگابایت
+
+🚀 **نحوه استفاده:**
+1️⃣ لینک ویدیو رو بفرست
+2️⃣ فرمت مورد نظر رو انتخاب کن
+3️⃣ منتظر دانلود بمون
+
+🤖 **توسط:** @YourChannel
+    """
+    
+    bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
 @bot.message_handler(commands=['admin'])
-def admin_panel(message):
+def admin_command(message):
     if message.from_user.id != ADMIN_ID:
         return
-    markup = InlineKeyboardMarkup()
+    
+    stats = db.get_stats()
+    
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🟢 روشن", callback_data="on"),
-        InlineKeyboardButton("🔴 خاموش", callback_data="off"),
-        InlineKeyboardButton("📊 آمار", callback_data="stats"),
-        InlineKeyboardButton("📢 پیام همگانی", callback_data="broadcast"),
-        InlineKeyboardButton("🔒 بلاک/آن‌بلاک", callback_data="block")
+        InlineKeyboardButton("🟢 روشن", callback_data="admin_on"),
+        InlineKeyboardButton("🔴 خاموش", callback_data="admin_off"),
+        InlineKeyboardButton("📊 آمار", callback_data="admin_stats"),
+        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
+        InlineKeyboardButton("🔒 بلاک/آنبلاک", callback_data="admin_block"),
+        InlineKeyboardButton("👥 کاربران", callback_data="admin_users"),
+        InlineKeyboardButton("📥 دانلودها", callback_data="admin_downloads"),
+        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset")
     )
-    bot.send_message(message.chat.id, "👑 پنل مدیریت", reply_markup=markup)
+    
+    status_text = f"""
+👑 **پنل مدیریت**
 
-# =================== Flask Dashboard =================
-app = Flask(__name__)
+📊 **آمار سریع:**
+👥 کل کاربران: {stats['total_users']}
+📥 کل دانلودها: {stats['total_downloads']}
+📊 دانلود امروز: {stats['today_downloads']}
+🔒 بلاک شده: {stats['blocked_users']}
+🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
+
+لطفاً یکی از گزینه‌ها رو انتخاب کن:
+    """
+    
+    bot.send_message(message.chat.id, status_text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
+def admin_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
+        return
+    
+    action = call.data.replace('admin_', '')
+    
+    if action == "on":
+        db.set_bot_status('ON')
+        bot.answer_callback_query(call.id, "✅ ربات روشن شد")
+        bot.edit_message_text("✅ ربات با موفقیت روشن شد", call.message.chat.id, call.message.message_id)
+    
+    elif action == "off":
+        db.set_bot_status('OFF')
+        bot.answer_callback_query(call.id, "✅ ربات خاموش شد")
+        bot.edit_message_text("✅ ربات با موفقیت خاموش شد", call.message.chat.id, call.message.message_id)
+    
+    elif action == "stats":
+        stats = db.get_stats()
+        users = db.get_users(limit=10)
+        
+        text = f"""
+📊 **آمار کامل**
+
+👥 **کاربران:**
+• کل: {stats['total_users']}
+• فعال امروز: {stats['today_active']}
+• بلاک شده: {stats['blocked_users']}
+
+📥 **دانلودها:**
+• کل: {stats['total_downloads']}
+• امروز: {stats['today_downloads']}
+
+🟢 **وضعیت:** {'روشن' if db.is_bot_on() else 'خاموش'}
+
+👤 **۱۰ کاربر آخر:**
+"""
+        
+        for user in users[:5]:
+            name = user[2] or user[1] or 'ناشناس'
+            text += f"• `{user[0]}` | {name} | دانلود: {user[7]}\n"
+        
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    
+    elif action == "broadcast":
+        bot.edit_message_text(
+            "📢 **پیام همگانی جدید**\n\nلطفاً متن پیام رو بفرست:", 
+            call.message.chat.id, 
+            call.message.message_id,
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(call.message, broadcast_handler)
+    
+    elif action == "block":
+        bot.edit_message_text(
+            "🔒 **مدیریت بلاک**\n\nآیدی عددی کاربر مورد نظر رو بفرست:", 
+            call.message.chat.id, 
+            call.message.message_id,
+            parse_mode="Markdown"
+        )
+        bot.register_next_step_handler(call.message, block_handler)
+    
+    elif action == "users":
+        users = db.get_users(limit=20)
+        text = "👥 **لیست کاربران:**\n\n"
+        
+        for user in users:
+            status = "🔒" if user[6] else "✅"
+            name = user[2] or user[1] or 'ناشناس'
+            text += f"{status} `{user[0]}` | {name} | دانلود: {user[7]}\n"
+        
+        if len(text) > 3000:
+            parts = [text[i:i+3000] for i in range(0, len(text), 3000)]
+            for part in parts:
+                bot.send_message(call.message.chat.id, part, parse_mode="Markdown")
+        else:
+            bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    
+    elif action == "downloads":
+        downloads = db.get_recent_downloads(limit=15)
+        text = "📥 **آخرین دانلودها:**\n\n"
+        
+        for dl in downloads:
+            name = dl[9] or dl[8] or 'ناشناس'
+            text += f"• {name} | {dl[3]} | {dl[7][:16]}\n"
+        
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+    
+    elif action == "reset":
+        db.execute("DELETE FROM downloads")
+        db.execute("UPDATE settings SET value = '0' WHERE key = 'total_downloads'")
+        bot.answer_callback_query(call.id, "✅ آمار ریست شد")
+        bot.edit_message_text("✅ تمام آمار با موفقیت ریست شد", call.message.chat.id, call.message.message_id)
+
+def broadcast_handler(message):
+    """ارسال پیام همگانی"""
+    msg_text = message.text
+    users = db.get_users(limit=1000)
+    
+    status_msg = bot.reply_to(message, "📤 در حال ارسال پیام همگانی...")
+    
+    sent = 0
+    failed = 0
+    
+    for user in users:
+        user_id = user[0]
+        if not user[6]:
+            try:
+                bot.send_message(user_id, f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
+                sent += 1
+            except Exception as e:
+                failed += 1
+                logger.error(f"خطا در ارسال به {user_id}: {e}")
+            time.sleep(0.05)
+    
+    bot.edit_message_text(
+        f"✅ **نتیجه ارسال همگانی**\n\n📤 ارسال شده: {sent}\n❌ ناموفق: {failed}", 
+        status_msg.chat.id, 
+        status_msg.message_id,
+        parse_mode="Markdown"
+    )
+
+def block_handler(message):
+    """مدیریت بلاک کاربر"""
+    try:
+        user_id = int(message.text.strip())
+        
+        # بررسی وجود کاربر
+        user = db.execute(
+            "SELECT * FROM users WHERE user_id = ?", 
+            (user_id,), 
+            fetch_one=True
+        )
+        
+        if user:
+            if user[6]:  # اگر بلاک است
+                db.unblock_user(user_id)
+                bot.reply_to(message, f"✅ کاربر {user_id} آنبلاک شد.")
+            else:
+                db.block_user(user_id)
+                bot.reply_to(message, f"✅ کاربر {user_id} بلاک شد.")
+        else:
+            # اگر کاربر وجود نداشت، اضافه کن و بلاک کن
+            db.execute(
+                "INSERT INTO users (user_id, blocked, joined_date) VALUES (?, 1, ?)",
+                (user_id, datetime.now())
+            )
+            bot.reply_to(message, f"✅ کاربر جدید {user_id} بلاک شد.")
+    
+    except ValueError:
+        bot.reply_to(message, "❌ لطفاً یک آیدی عددی معتبر بفرست.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطا: {e}")
+
+@bot.message_handler(func=lambda m: True)
+def handle_message(message):
+    """پردازش لینک‌ها"""
+    url = message.text.strip()
+    user_id = message.from_user.id
+    
+    # ذخیره کاربر
+    db.add_user(
+        user_id, 
+        message.from_user.username,
+        message.from_user.first_name,
+        message.from_user.last_name
+    )
+    
+    # بررسی لینک
+    if not (url.startswith(('http://', 'https://')) and ('youtube.com' in url or 'youtu.be' in url or 'youtu.be' in url)):
+        bot.reply_to(message, "❌ لطفاً یک لینک معتبر از یوتیوب بفرست.")
+        return
+    
+    # بررسی بلاک بودن
+    if db.is_blocked(user_id):
+        bot.reply_to(message, "⛔ شما بلاک هستید.")
+        return
+    
+    # بررسی روشن بودن ربات
+    if not db.is_bot_on():
+        bot.reply_to(message, "⛔ ربات خاموش است.")
+        return
+    
+    # منوی انتخاب فرمت
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🎵 MP3 (موزیک)", callback_data=f"dl_mp3_{url}"),
+        InlineKeyboardButton("🎬 MP4 (ویدیو)", callback_data=f"dl_mp4_{url}")
+    )
+    
+    bot.reply_to(
+        message, 
+        "📥 **فرمت مورد نظر رو انتخاب کن:**", 
+        reply_markup=markup, 
+        parse_mode="Markdown"
+    )
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('dl_'))
+def download_callback(call):
+    """پردازش درخواست دانلود"""
+    try:
+        _, fmt, url = call.data.split('_', 2)
+        
+        # پیام وضعیت
+        status_msg = bot.send_message(call.message.chat.id, "⏳ اضافه شدن به صف دانلود...")
+        
+        # اضافه به صف
+        task = (
+            call.message.chat.id,
+            call.from_user.id,
+            url,
+            fmt,
+            status_msg.message_id
+        )
+        download_queue.put(task)
+        
+        # آپدیت پیام
+        queue_size = download_queue.qsize()
+        bot.edit_message_text(
+            f"✅ به صف دانلود اضافه شد\n📊 موقعیت در صف: {queue_size}",
+            call.message.chat.id,
+            status_msg.message_id
+        )
+        
+        bot.answer_callback_query(call.id, "✅ درخواست ثبت شد")
+        
+    except Exception as e:
+        bot.answer_callback_query(call.id, f"❌ خطا: {str(e)[:30]}")
+
+# ================= Webhook =================
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    """دریافت آپدیت‌های تلگرام"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return 'OK', 200
+    return 'Invalid request', 403
+
+# ================= پنل وب =================
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+    <title>پنل مدیریت ربات</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Vazir', 'Tahoma', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 30px;
+            border-radius: 20px;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
+            text-align: center;
+        }
+        
+        .header h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            transition: transform 0.3s;
+            text-align: center;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-icon {
+            font-size: 40px;
+            margin-bottom: 15px;
+        }
+        
+        .stat-title {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 10px;
+        }
+        
+        .stat-value {
+            color: #333;
+            font-size: 32px;
+            font-weight: bold;
+        }
+        
+        .status-badge {
+            display: inline-block;
+            padding: 8px 20px;
+            border-radius: 50px;
+            font-weight: bold;
+            font-size: 14px;
+            margin: 10px 0;
+        }
+        
+        .status-on {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .status-off {
+            background: #f44336;
+            color: white;
+        }
+        
+        .section {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 25px;
+            border-radius: 15px;
+            margin-bottom: 20px;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+        }
+        
+        .section h2 {
+            color: #333;
+            font-size: 20px;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 50px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin: 5px;
+            text-decoration: none;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-success {
+            background: #4caf50;
+            color: white;
+        }
+        
+        .btn-danger {
+            background: #f44336;
+            color: white;
+        }
+        
+        .btn-warning {
+            background: #ff9800;
+            color: white;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        .form-group label {
+            display: block;
+            color: #333;
+            margin-bottom: 8px;
+            font-weight: bold;
+        }
+        
+        .form-control {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        .form-control:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        textarea.form-control {
+            min-height: 120px;
+            resize: vertical;
+        }
+        
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .table th,
+        .table td {
+            padding: 12px;
+            text-align: right;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        
+        .table th {
+            background: #f8f9fa;
+            color: #333;
+            font-weight: bold;
+        }
+        
+        .table tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .alert {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-danger {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .footer {
+            text-align: center;
+            color: rgba(255,255,255,0.8);
+            margin-top: 30px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 پنل مدیریت ربات دانلود یوتیوب</h1>
+            <p>خوش آمدید، ادمین</p>
+            <div class="status-badge {% if bot_status == 'ON' %}status-on{% else %}status-off{% endif %}">
+                وضعیت ربات: {% if bot_status == 'ON' %}🟢 روشن{% else %}🔴 خاموش{% endif %}
+            </div>
+        </div>
+        
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">👥</div>
+                <div class="stat-title">کل کاربران</div>
+                <div class="stat-value">{{ stats.total_users }}</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">📥</div>
+                <div class="stat-title">کل دانلودها</div>
+                <div class="stat-value">{{ stats.total_downloads }}</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">📊</div>
+                <div class="stat-title">دانلود امروز</div>
+                <div class="stat-value">{{ stats.today_downloads }}</div>
+            </div>
+            
+            <div class="stat-card">
+                <div class="stat-icon">🔒</div>
+                <div class="stat-title">کاربران بلاک</div>
+                <div class="stat-value">{{ stats.blocked_users }}</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h2>🔄 کنترل ربات</h2>
+            <form method="POST" action="/toggle" style="display: inline;">
+                <button type="submit" name="action" value="on" class="btn btn-success">🟢 روشن کردن</button>
+            </form>
+            <form method="POST" action="/toggle" style="display: inline;">
+                <button type="submit" name="action" value="off" class="btn btn-danger">🔴 خاموش کردن</button>
+            </form>
+        </div>
+        
+        <div class="section">
+            <h2>📢 پیام همگانی</h2>
+            <form method="POST" action="/broadcast">
+                <div class="form-group">
+                    <label>متن پیام:</label>
+                    <textarea name="message" class="form-control" placeholder="متن پیام خود را وارد کنید..." required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">📤 ارسال برای همه کاربران</button>
+            </form>
+        </div>
+        
+        <div class="section">
+            <h2>🔒 مدیریت کاربران</h2>
+            <form method="POST" action="/block_user">
+                <div class="form-group">
+                    <label>آیدی عددی کاربر:</label>
+                    <input type="number" name="user_id" class="form-control" placeholder="مثال: 123456789" required>
+                </div>
+                <button type="submit" name="action" value="block" class="btn btn-danger">🔒 بلاک کردن</button>
+                <button type="submit" name="action" value="unblock" class="btn btn-success">🔓 آنبلاک کردن</button>
+            </form>
+        </div>
+        
+        <div class="section">
+            <h2>📊 مدیریت آمار</h2>
+            <form method="POST" action="/reset_stats" onsubmit="return confirm('آیا از ریست آمار اطمینان دارید؟')">
+                <button type="submit" class="btn btn-warning">🔄 ریست آمار دانلودها</button>
+            </form>
+        </div>
+        
+        <div class="section">
+            <h2>👥 آخرین کاربران</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>آیدی</th>
+                        <th>نام</th>
+                        <th>دانلودها</th>
+                        <th>وضعیت</th>
+                        <th>آخرین فعالیت</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in recent_users %}
+                    <tr>
+                        <td>{{ user[0] }}</td>
+                        <td>{{ user[2] or user[1] or 'ناشناس' }}</td>
+                        <td>{{ user[7] }}</td>
+                        <td>{% if user[6] %}🔒 بلاک{% else %}✅ فعال{% endif %}</td>
+                        <td>{{ user[5][:16] if user[5] else 'نامشخص' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="section">
+            <h2>📥 آخرین دانلودها</h2>
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>کاربر</th>
+                        <th>فرمت</th>
+                        <th>عنوان</th>
+                        <th>زمان</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for dl in recent_downloads %}
+                    <tr>
+                        <td>{{ dl[9] or dl[8] or dl[1] }}</td>
+                        <td>{{ dl[3] }}</td>
+                        <td>{{ dl[4][:30] }}...</td>
+                        <td>{{ dl[7][:16] }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <div class="footer">
+            <p>ربات دانلود یوتیوب | ساخته شده با ❤️ | نسخه 2.0</p>
+        </div>
+    </div>
+</body>
+</html>
+"""
 
 @app.route('/')
-def dashboard():
-    cursor.execute("SELECT COUNT(*) FROM users")
-    users = cursor.fetchone()[0]
-    cursor.execute("SELECT total_downloads, today_downloads FROM stats")
-    total, today = cursor.fetchone()
-    cursor.execute("SELECT bot_status FROM settings")
-    status = cursor.fetchone()[0]
-    return f"""
-    <h2>پنل ادمین</h2>
-    <p>وضعیت ربات: {status}</p>
-    <p>تعداد کاربران: {users}</p>
-    <p>کل دانلودها: {total}</p>
-    <p>دانلود امروز: {today}</p>
-    <form method="POST" action="/toggle">
-        <button name="action" value="on">روشن</button>
-        <button name="action" value="off">خاموش</button>
-    </form>
-    <form method="POST" action="/broadcast">
-        <input name="message" placeholder="پیام همگانی">
-        <button>ارسال پیام</button>
-    </form>
-    <form method="POST" action="/reset_stats">
-        <button>ریست آمار</button>
-    </form>
-    """
+def home():
+    """صفحه اصلی پنل"""
+    stats = db.get_stats()
+    bot_status = db.execute("SELECT value FROM settings WHERE key = 'bot_status'", fetch_one=True)
+    recent_users = db.get_users(limit=10)
+    recent_downloads = db.get_recent_downloads(limit=10)
+    
+    return render_template_string(
+        HTML_TEMPLATE,
+        stats=stats,
+        bot_status=bot_status[0] if bot_status else 'ON',
+        recent_users=recent_users,
+        recent_downloads=recent_downloads
+    )
 
 @app.route('/toggle', methods=['POST'])
 def toggle():
+    """تغییر وضعیت ربات"""
     action = request.form.get('action')
-    cursor.execute("UPDATE settings SET bot_status=?", (action.upper(),))
-    conn.commit()
-    return redirect('/')
-
-@app.route('/reset_stats', methods=['POST'])
-def reset_stats():
-    today = str(datetime.now().date())
-    cursor.execute("UPDATE stats SET total_downloads=0, today_downloads=0, last_date=?", (today,))
-    conn.commit()
+    if action in ['on', 'off']:
+        db.set_bot_status(action.upper())
     return redirect('/')
 
 @app.route('/broadcast', methods=['POST'])
 def broadcast():
-    msg = request.form.get('message')
-    cursor.execute("SELECT user_id, blocked FROM users")
-    users = cursor.fetchall()
-    for user_id, blocked in users:
-        if not blocked:
-            try:
-                bot.send_message(user_id, msg)
-            except:
-                continue
+    """ارسال پیام همگانی"""
+    message = request.form.get('message')
+    if message:
+        users = db.get_users(limit=1000)
+        
+        sent = 0
+        for user in users:
+            if not user[6]:
+                try:
+                    bot.send_message(user[0], f"📢 **پیام همگانی**\n\n{message}", parse_mode="Markdown")
+                    sent += 1
+                except:
+                    pass
+                time.sleep(0.05)
+        
+        return f"✅ پیام به {sent} کاربر ارسال شد. <a href='/'>بازگشت</a>"
     return redirect('/')
 
-# =================== Webhook =================
-@app.route(f'/webhook', methods=['POST'])
-def webhook():
-    json_str = request.get_data().decode('utf-8')
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return '', 200
+@app.route('/block_user', methods=['POST'])
+def block_user():
+    """بلاک/آنبلاک کاربر"""
+    try:
+        user_id = int(request.form.get('user_id'))
+        action = request.form.get('action')
+        
+        if action == 'block':
+            db.block_user(user_id)
+            msg = f"✅ کاربر {user_id} بلاک شد."
+        else:
+            db.unblock_user(user_id)
+            msg = f"✅ کاربر {user_id} آنبلاک شد."
+        
+        return f"{msg} <a href='/'>بازگشت</a>"
+    except:
+        return "❌ خطا در پردازش. <a href='/'>بازگشت</a>"
 
-def set_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(url=WEBHOOK_URL)
+@app.route('/reset_stats', methods=['POST'])
+def reset_stats():
+    """ریست آمار"""
+    db.execute("DELETE FROM downloads")
+    db.execute("UPDATE settings SET value = '0' WHERE key = 'total_downloads'")
+    return redirect('/')
 
-# =================== اجرا دائم =================
-def run_bot():
-    while True:
+# ================= راه‌اندازی =================
+def setup_webhook():
+    """تنظیم webhook"""
+    if config.USE_WEBHOOK:
         try:
-            set_webhook()
-            app.run(host='0.0.0.0', port=5000)
+            webhook_url = config.WEBHOOK_URL
+            bot.remove_webhook()
+            time.sleep(1)
+            bot.set_webhook(url=webhook_url)
+            logger.info(f"✅ Webhook تنظیم شد: {webhook_url}")
+            return True
         except Exception as e:
-            print("❌ خطا، ری‌استارت مجدد:", e)
+            logger.error(f"❌ خطا در تنظیم webhook: {e}")
+            return False
+    return True
+
+def signal_handler(sig, frame):
+    """مدیریت سیگنال خروج"""
+    logger.info("🛑 در حال خروج از برنامه...")
+    sys.exit(0)
 
 if __name__ == "__main__":
-    threading.Thread(target=run_bot).start()
+    signal.signal(signal.SIGINT, signal_handler)
+    
+    logger.info("🚀 در حال راه‌اندازی ربات...")
+    logger.info(f"👤 آیدی ادمین: {ADMIN_ID}")
+    
+    # تنظیم webhook
+    webhook_ok = setup_webhook()
+    
+    if config.USE_WEBHOOK and webhook_ok:
+        # اجرا با webhook
+        logger.info(f"🚀 اجرا با webhook روی پورت {config.WEBHOOK_PORT}")
+        app.run(
+            host=config.WEBHOOK_HOST,
+            port=config.WEBHOOK_PORT,
+            debug=config.DEBUG,
+            threaded=True
+        )
+    else:
+        # اجرا با polling
+        logger.info("🚀 اجرا با polling")
+        logger.info("🌐 پنل مدیریت روی آدرس http://localhost:5000 در دسترس است")
+        
+        # اجرای Flask در thread جداگانه
+        flask_thread = threading.Thread(
+            target=app.run,
+            kwargs={
+                'host': config.WEBHOOK_HOST,
+                'port': config.WEBHOOK_PORT,
+                'debug': config.DEBUG,
+                'threaded': True
+            },
+            daemon=True
+        )
+        flask_thread.start()
+        
+        # اجرای ربات
+        logger.info("✅ ربات با polling شروع به کار کرد")
+        bot.infinity_polling(timeout=60, long_polling_timeout=30)
