@@ -18,6 +18,11 @@ DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT",8080))
 
+REQUIRED_CHANNELS = [
+    ("@top_topy_downloader", 3828073352),
+    ("@IdTOP_TOPY", 3872568492)
+]
+
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
@@ -29,7 +34,7 @@ def extract_urls(text):
     return re.findall(r'https?://[^\s]+', text)
 
 def detect_platform(url):
-    url=url.lower()
+    url = url.lower()
     if "youtube" in url or "youtu.be" in url:
         return "YouTube"
     if "tiktok" in url:
@@ -189,6 +194,16 @@ class Database:
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
 
+    def check_membership(self,user_id):
+        for _,channel_id in REQUIRED_CHANNELS:
+            try:
+                member = bot.get_chat_member(channel_id,user_id)
+                if member.status not in ['member','administrator','creator']:
+                    return False
+            except:
+                return False
+        return True
+
     def get_stats(self):
         today=datetime.now().strftime('%Y-%m-%d')
         self.cursor.execute("SELECT COUNT(*),SUM(download_count) FROM users")
@@ -282,22 +297,47 @@ def download_video(url,chat_id,user_id,is_group=False):
         bot.send_message(chat_id,f"❌ خطا:\n{str(e)[:200]}")
 
 # ================= تلگرام =================
+WELCOME_MESSAGE="""
+🎬 **ربات دانلود حرفه‌ای Ultra-Pro** 🎬
+
+✨ **ویژگی‌ها:**
+- دانلود از یوتیوب، تیک‌تاک، اینستاگرام، توییتر، فیسبوک و سایر لینک‌ها
+- حجم مجاز فایل: ۳۰۰ مگابایت
+- استفاده در چت شخصی و گروه‌ها
+- پشتیبانی از فرمت ویدیو و صوت
+
+📌 برای شروع فقط لینک را ارسال کنید
+📢 کانال‌ها: @top_topy_downloader و @IdTOP_TOPY
+"""
+
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    bot.reply_to(message,"🎬 لینک بفرست تا دانلود کنم")
+    markup=InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("📚 راهنما", callback_data="help"),
+        InlineKeyboardButton("📢 کانال", url="https://t.me/IdTOP_TOPY"),
+        InlineKeyboardButton("👨‍💻 ادمین", url=f"tg://user?id={ADMIN_ID}")
+    )
+    bot.reply_to(message,WELCOME_MESSAGE,reply_markup=markup,parse_mode="Markdown")
 
+# ================= پنل ادمین =================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id!=ADMIN_ID:
+        return
+    if not db.check_membership(message.from_user.id):
+        bot.reply_to(message,"⛔ ابتدا در کانال‌ها عضو شوید")
         return
     stats=db.get_stats()
     users=db.get_users(10)
     downloads=db.get_recent_downloads(10)
     groups=db.get_groups(10)
     markup=InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("🟢 روشن",callback_data="on"))
-    markup.add(InlineKeyboardButton("🔴 خاموش",callback_data="off"))
+    markup.add(
+        InlineKeyboardButton("🟢 روشن",callback_data="on"),
+        InlineKeyboardButton("🔴 خاموش",callback_data="off"),
+    )
     text=f"👑 پنل مدیریت\n\nآمار:\nکل کاربران: {stats['total_users']}\nدانلودها: {stats['total_downloads']}\nگروه‌ها: {stats['total_groups']}\nفعال امروز: {stats['active_today']}\nبلاک شده: {stats['blocked']}\n\nآخرین کاربران:\n"
     for u in users:
         text+=f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
@@ -317,6 +357,8 @@ def callback(call):
             return
         db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
         bot.edit_message_text(f"وضعیت جدید: {call.data.upper()}",call.message.chat.id,call.message.message_id)
+    elif call.data=="help":
+        bot.edit_message_text(WELCOME_MESSAGE,call.message.chat.id,call.message.message_id)
 
 # ================= پردازش پیام =================
 @bot.message_handler(func=lambda m: True,content_types=['text'])
@@ -332,7 +374,7 @@ def handle_message(message):
     bot.reply_to(message,"✅ لینک دریافت شد، شروع دانلود...")
     threading.Thread(target=download_video,args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),daemon=True).start()
 
-# ================= وب پنل حرفه‌ای =================
+# ================= وب پنل =================
 HTML_TEMPLATE="""
 <!DOCTYPE html>
 <html dir="rtl">
