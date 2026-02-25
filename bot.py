@@ -8,8 +8,6 @@ from flask import Flask, request, redirect, render_template_string, jsonify
 import yt_dlp
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-from Crypto.Cipher import AES
-import base64
 import time
 import logging
 import sys
@@ -26,25 +24,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ================= کلید AES =================
-SECRET_KEY = b"16bytesecretkey!"  # 16 بایت کلید
+# ================= توکن و ادمین - مقادیر واقعی =================
+# دیگه از رمزگشایی استفاده نمی‌کنیم
+TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
+ADMIN_ID = 8226091292
 
-# ================= توکن و ادمین هش شده =================
-ENCODED_TOKEN = "s4u4OyNNf5uZQO/5jhBmlb3/KD7VpHTlCFe9gD57Rfo="  # هش شده توکن واقعی
-ENCODED_ADMIN = "ODIyNjA5MTI5Mg=="  # هش شده ایدی ادمین
-
-def decrypt_aes(enc_str):
-    try:
-        cipher = AES.new(SECRET_KEY, AES.MODE_ECB)
-        decoded = base64.b64decode(enc_str)
-        decrypted = cipher.decrypt(decoded)
-        return decrypted.rstrip(b"\0").decode()
-    except Exception as e:
-        logger.error(f"خطا در رمزگشایی: {e}")
-        return None
-
-TOKEN = decrypt_aes(ENCODED_TOKEN)
-ADMIN_ID = int(decrypt_aes(ENCODED_ADMIN)) if decrypt_aes(ENCODED_ADMIN) else 8226091292
+logger.info(f"✅ توکن: {TOKEN[:10]}...")
+logger.info(f"✅ ادمین: {ADMIN_ID}")
 
 # ================= تنظیمات =================
 class Config:
@@ -52,7 +38,7 @@ class Config:
     DOWNLOAD_PATH = "downloads"
     WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
     WEBHOOK_HOST = "0.0.0.0"
-    WEBHOOK_PORT = int(os.environ.get('PORT', 5000))
+    WEBHOOK_PORT = int(os.environ.get('PORT', 8080))  # از پورت 8080 استفاده کن
     USE_WEBHOOK = True
     DEBUG = False
 
@@ -83,7 +69,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # جدول کاربران (پیشرفته)
+            # جدول کاربران
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -156,6 +142,9 @@ class Database:
             
             for key, value in default_settings:
                 cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (key, value))
+            
+            # تنظیم ادمین
+            cursor.execute("INSERT OR IGNORE INTO users (user_id, is_admin) VALUES (?, 1)", (ADMIN_ID,))
             
             conn.commit()
             conn.close()
@@ -1010,7 +999,7 @@ if __name__ == "__main__":
     if setup_webhook():
         logger.info("✅ Webhook با موفقیت تنظیم شد")
     else:
-        logger.warning("⚠️ خطا در تنظیم Webhook")
+        logger.warning("⚠️ خطا در تنظیم Webhook - ادامه با polling")
     
     logger.info(f"🚀 اجرا روی پورت {config.WEBHOOK_PORT}")
     app.run(host=config.WEBHOOK_HOST, port=config.WEBHOOK_PORT, debug=config.DEBUG, threaded=True)
