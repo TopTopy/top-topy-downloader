@@ -2,12 +2,14 @@
 import os
 import threading
 from queue import Queue
-from datetime import datetime
+from datetime import datetime, timedelta
 import sqlite3
 from flask import Flask, request, redirect, render_template_string, jsonify
 import yt_dlp
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from Crypto.Cipher import AES
+import base64
 import time
 import logging
 import sys
@@ -24,10 +26,32 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ================= توکن و ادمین - مقادیر واقعی =================
-# دیگه از رمزگشایی استفاده نمی‌کنیم
-TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
-ADMIN_ID = 8226091292
+# ================= کلید AES =================
+SECRET_KEY = b"16bytesecretkey!"  # 16 بایت کلید
+
+# ================= توکن و ادمین هش شده =================
+ENCODED_TOKEN = "s4u4OyNNf5uZQO/5jhBmlb3/KD7VpHTlCFe9gD57Rfo="
+ENCODED_ADMIN = "ODIyNjA5MTI5Mg=="
+
+def decrypt_aes(enc_str):
+    try:
+        cipher = AES.new(SECRET_KEY, AES.MODE_ECB)
+        decoded = base64.b64decode(enc_str)
+        decrypted = cipher.decrypt(decoded)
+        return decrypted.rstrip(b"\0").decode()
+    except Exception as e:
+        logger.error(f"خطا در رمزگشایی: {e}")
+        return None
+
+# ================= رمزگشایی توکن و ادمین =================
+TOKEN = decrypt_aes(ENCODED_TOKEN)
+ADMIN_ID = int(decrypt_aes(ENCODED_ADMIN)) if decrypt_aes(ENCODED_ADMIN) else None
+
+# اگر رمزگشایی نشد، از مقادیر مستقیم استفاده کن
+if not TOKEN:
+    TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
+if not ADMIN_ID:
+    ADMIN_ID = 8226091292
 
 logger.info(f"✅ توکن: {TOKEN[:10]}...")
 logger.info(f"✅ ادمین: {ADMIN_ID}")
@@ -38,9 +62,19 @@ class Config:
     DOWNLOAD_PATH = "downloads"
     WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
     WEBHOOK_HOST = "0.0.0.0"
-    WEBHOOK_PORT = int(os.environ.get('PORT', 8080))  # از پورت 8080 استفاده کن
+    WEBHOOK_PORT = int(os.environ.get('PORT', 8080))
     USE_WEBHOOK = True
     DEBUG = False
+    
+    # تنظیمات عضویت اجباری
+    FORCE_JOIN_ENABLED = False  # فعال/غیرفعال کردن عضویت اجباری
+    FORCE_JOIN_CHANNEL = "@your_channel"  # آیدی کانال اجباری
+    FORCE_JOIN_CHANNEL_ID = -100123456789  # آیدی عددی کانال
+    FORCE_JOIN_MESSAGE = "🔒 برای استفاده از ربات، ابتدا در کانال ما عضو شوید:\n{channel_link}\n\nبعد از عضویت، دکمه ✅ عضویت را بزنید."
+    
+    # تنظیمات محدودیت دانلود روزانه
+    DAILY_LIMIT_ENABLED = False  # فعال/غیرفعال کردن محدودیت روزانه
+    DAILY_LIMIT_COUNT = 5  # تعداد دانلود مجاز در روز برای هر کاربر
 
 config = Config()
 
@@ -69,7 +103,7 @@ class Database:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            # جدول کاربران
+            # جدول کاربران (پیشرفته با تمام فیلدها)
             cursor.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
@@ -81,7 +115,11 @@ class Database:
                 blocked INTEGER DEFAULT 0,
                 downloads_count INTEGER DEFAULT 0,
                 is_admin INTEGER DEFAULT 0,
-                language TEXT DEFAULT 'fa'
+                language TEXT DEFAULT 'fa',
+                daily_downloads INTEGER DEFAULT 0,
+                last_download_date TEXT,
+                joined_channel INTEGER DEFAULT 0,
+                warning_count INTEGER DEFAULT 0
             )
             """)
             
@@ -92,7 +130,8 @@ class Database:
                 date TEXT UNIQUE,
                 total_downloads INTEGER DEFAULT 0,
                 total_users INTEGER DEFAULT 0,
-                active_users INTEGER DEFAULT 0
+                active_users INTEGER DEFAULT 0,
+                total_blocked INTEGER DEFAULT 0
             )
             """)
             
@@ -131,12 +170,28 @@ class Database:
             )
             """)
             
+            # جدول پشتیبان‌گیری
+            cursor.execute("""
+            CREATE TABLE IF NOT EXISTS backups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                filename TEXT,
+                size INTEGER,
+                created_at TIMESTAMP
+            )
+            """)
+            
             # تنظیمات پیش‌فرض
             default_settings = [
                 ('bot_status', 'ON'),
                 ('maintenance_mode', 'OFF'),
                 ('total_downloads', '0'),
                 ('total_users', '0'),
+                ('total_blocked', '0'),
+                ('force_join_enabled', str(config.FORCE_JOIN_ENABLED)),
+                ('daily_limit_enabled', str(config.DAILY_LIMIT_ENABLED)),
+                ('daily_limit_count', str(config.DAILY_LIMIT_COUNT)),
+                ('force_join_channel', config.FORCE_JOIN_CHANNEL),
+                ('force_join_channel_id', str(config.FORCE_JOIN_CHANNEL_ID)),
                 ('created_at', str(datetime.now()))
             ]
             
@@ -178,17 +233,25 @@ class Database:
     
     def add_user(self, user_id, username=None, first_name=None, last_name=None):
         now = datetime.now()
+        today = now.strftime('%Y-%m-%d')
+        
         try:
             user = self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
             
             if user:
+                # آپدیت آخرین فعالیت
                 self.execute("UPDATE users SET last_active = ?, username = ?, first_name = ?, last_name = ? WHERE user_id = ?",
                            (now, username, first_name, last_name, user_id))
+                
+                # ریست دانلود روزانه اگه روز جدید باشه
+                if user[10] != today:  # last_download_date
+                    self.execute("UPDATE users SET daily_downloads = 0, last_download_date = ? WHERE user_id = ?", (today, user_id))
             else:
+                # افزودن کاربر جدید
                 self.execute("""
-                    INSERT INTO users (user_id, username, first_name, last_name, joined_date, last_active, blocked, downloads_count, is_admin, language)
-                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 'fa')
-                """, (user_id, username, first_name, last_name, now, now, 1 if user_id == ADMIN_ID else 0))
+                    INSERT INTO users (user_id, username, first_name, last_name, joined_date, last_active, blocked, downloads_count, is_admin, language, daily_downloads, last_download_date, joined_channel, warning_count)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, 0, ?, 'fa', 0, ?, 0, 0)
+                """, (user_id, username, first_name, last_name, now, now, 1 if user_id == ADMIN_ID else 0, today))
                 
                 date_str = now.strftime('%Y-%m-%d')
                 self.execute("INSERT INTO stats (date, total_users) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET total_users = total_users + 1", (date_str,))
@@ -197,6 +260,45 @@ class Database:
         except Exception as e:
             logger.error(f"خطا در add_user: {e}")
             return False
+    
+    def check_force_join(self, user_id):
+        """بررسی عضویت اجباری در کانال"""
+        enabled = self.execute("SELECT value FROM settings WHERE key = 'force_join_enabled'", fetch_one=True)
+        if not enabled or enabled[0] != 'True':
+            return True
+        
+        channel_id = self.execute("SELECT value FROM settings WHERE key = 'force_join_channel_id'", fetch_one=True)
+        if not channel_id:
+            return True
+        
+        try:
+            member = bot.get_chat_member(int(channel_id[0]), user_id)
+            status = member.status
+            return status in ['member', 'administrator', 'creator']
+        except:
+            return False
+    
+    def check_daily_limit(self, user_id):
+        """بررسی محدودیت دانلود روزانه"""
+        enabled = self.execute("SELECT value FROM settings WHERE key = 'daily_limit_enabled'", fetch_one=True)
+        if not enabled or enabled[0] != 'True':
+            return True
+        
+        limit = self.execute("SELECT value FROM settings WHERE key = 'daily_limit_count'", fetch_one=True)
+        if not limit:
+            return True
+        
+        user = self.execute("SELECT daily_downloads FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
+        return user and user[0] < int(limit[0])
+    
+    def increment_daily_download(self, user_id):
+        """افزایش تعداد دانلود روزانه"""
+        today = datetime.now().strftime('%Y-%m-%d')
+        self.execute("""
+            UPDATE users 
+            SET daily_downloads = daily_downloads + 1, last_download_date = ? 
+            WHERE user_id = ?
+        """, (today, user_id))
     
     def is_blocked(self, user_id):
         result = self.execute("SELECT blocked FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
@@ -211,13 +313,23 @@ class Database:
         date_str = now.strftime('%Y-%m-%d')
         
         try:
+            # ثبت دانلود
             self.execute("INSERT INTO downloads (user_id, url, format, title, filesize, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
                        (user_id, url, fmt, title, filesize, status, now))
             
+            # آپدیت تعداد دانلودهای کاربر
             self.execute("UPDATE users SET downloads_count = downloads_count + 1, last_active = ? WHERE user_id = ?", (now, user_id))
             
-            self.execute("INSERT INTO stats (date, total_downloads) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET total_downloads = total_downloads + 1", (date_str,))
+            # افزایش دانلود روزانه
+            self.increment_daily_download(user_id)
             
+            # آپدیت آمار روزانه
+            self.execute("""
+                INSERT INTO stats (date, total_downloads) VALUES (?, 1) 
+                ON CONFLICT(date) DO UPDATE SET total_downloads = total_downloads + 1
+            """, (date_str,))
+            
+            # آپدیت تنظیمات کل
             self.execute("UPDATE settings SET value = value + 1 WHERE key = 'total_downloads'")
             
         except Exception as e:
@@ -232,12 +344,18 @@ class Database:
         total_downloads = self.execute("SELECT value FROM settings WHERE key = 'total_downloads'", fetch_one=True)
         today_downloads = self.execute("SELECT total_downloads FROM stats WHERE date = ?", (today,), fetch_one=True)
         
+        # آمار جدید
+        total_admins = self.execute("SELECT COUNT(*) as count FROM users WHERE is_admin = 1", fetch_one=True)
+        users_joined_channel = self.execute("SELECT COUNT(*) as count FROM users WHERE joined_channel = 1", fetch_one=True)
+        
         return {
             'total_users': total_users[0] if total_users else 0,
             'today_active': today_active[0] if today_active else 0,
             'blocked_users': blocked_users[0] if blocked_users else 0,
             'total_downloads': int(total_downloads[0]) if total_downloads else 0,
-            'today_downloads': today_downloads[0] if today_downloads else 0
+            'today_downloads': today_downloads[0] if today_downloads else 0,
+            'total_admins': total_admins[0] if total_admins else 0,
+            'users_joined_channel': users_joined_channel[0] if users_joined_channel else 0
         }
     
     def set_bot_status(self, status):
@@ -249,13 +367,22 @@ class Database:
     def unblock_user(self, user_id):
         self.execute("UPDATE users SET blocked = 0 WHERE user_id = ?", (user_id,))
     
-    def get_users(self, limit=50, blocked_only=False):
+    def get_users(self, limit=50, blocked_only=False, admins_only=False):
         query = "SELECT * FROM users"
+        conditions = []
         params = []
+        
         if blocked_only:
-            query += " WHERE blocked = 1"
+            conditions.append("blocked = 1")
+        if admins_only:
+            conditions.append("is_admin = 1")
+        
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        
         query += " ORDER BY last_active DESC LIMIT ?"
         params.append(limit)
+        
         return self.execute(query, params, fetch_all=True)
     
     def get_recent_downloads(self, limit=20):
@@ -266,6 +393,26 @@ class Database:
             ORDER BY d.timestamp DESC
             LIMIT ?
         """, (limit,), fetch_all=True)
+    
+    def get_user_info(self, user_id):
+        return self.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
+    
+    def set_force_join(self, enabled, channel=None, channel_id=None):
+        if enabled is not None:
+            self.execute("UPDATE settings SET value = ? WHERE key = 'force_join_enabled'", (str(enabled),))
+        if channel:
+            self.execute("UPDATE settings SET value = ? WHERE key = 'force_join_channel'", (channel,))
+        if channel_id:
+            self.execute("UPDATE settings SET value = ? WHERE key = 'force_join_channel_id'", (str(channel_id),))
+    
+    def set_daily_limit(self, enabled, limit=None):
+        if enabled is not None:
+            self.execute("UPDATE settings SET value = ? WHERE key = 'daily_limit_enabled'", (str(enabled),))
+        if limit:
+            self.execute("UPDATE settings SET value = ? WHERE key = 'daily_limit_count'", (str(limit),))
+    
+    def mark_joined_channel(self, user_id):
+        self.execute("UPDATE users SET joined_channel = 1 WHERE user_id = ?", (user_id,))
 
 # ================= ایجاد دیتابیس =================
 db = Database()
@@ -297,6 +444,12 @@ def process_download_task(chat_id, user_id, url, fmt, status_message_id):
         
         if not db.is_bot_on():
             bot.edit_message_text("⛔ ربات خاموش است.", chat_id, status_message_id)
+            return
+        
+        # بررسی محدودیت دانلود روزانه
+        if not db.check_daily_limit(user_id):
+            limit = db.execute("SELECT value FROM settings WHERE key = 'daily_limit_count'", fetch_one=True)
+            bot.edit_message_text(f"❌ شما به محدودیت دانلود روزانه ({limit[0]} فایل) رسیده‌اید.", chat_id, status_message_id)
             return
         
         ydl_opts = {
@@ -357,7 +510,7 @@ def process_download_task(chat_id, user_id, url, fmt, status_message_id):
                     
                     with open(filename, 'rb') as f:
                         if fmt == 'mp3' or filename.endswith(('.mp3', '.m4a', '.ogg')):
-                            bot.send_audio(chat_id, f, caption=f"🎵 {title}", title=title, performer="Unknown", duration=info.get('duration', 0))
+                            bot.send_audio(chat_id, f, caption=f"🎵 {title}", title=title, performer="YouTube", duration=info.get('duration', 0))
                         elif filename.endswith(('.mp4', '.mkv', '.webm')):
                             bot.send_video(chat_id, f, caption=f"🎬 {title}", duration=info.get('duration', 0))
                         elif filename.endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
@@ -394,6 +547,19 @@ def start_command(message):
     
     db.add_user(user_id, username, first_name, last_name)
     
+    # بررسی عضویت اجباری
+    if not db.check_force_join(user_id):
+        channel = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel'", fetch_one=True)
+        channel_link = f"https://t.me/{channel[0].replace('@', '')}" if channel else ""
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("✅ عضویت", url=channel_link))
+        markup.add(InlineKeyboardButton("🔄 بررسی عضویت", callback_data="check_join"))
+        
+        force_msg = config.FORCE_JOIN_MESSAGE.format(channel_link=channel_link)
+        bot.reply_to(message, force_msg, reply_markup=markup, parse_mode="Markdown")
+        return
+    
     welcome_text = """
 🎬 **ربات دانلود از همه سایت‌ها**
 
@@ -425,7 +591,10 @@ def admin_command(message):
         InlineKeyboardButton("🔒 بلاک/آنبلاک", callback_data="admin_block"),
         InlineKeyboardButton("👥 کاربران", callback_data="admin_users"),
         InlineKeyboardButton("📥 دانلودها", callback_data="admin_downloads"),
-        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset")
+        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset"),
+        InlineKeyboardButton("🔐 عضویت اجباری", callback_data="admin_force_join"),
+        InlineKeyboardButton("📊 محدودیت روزانه", callback_data="admin_daily_limit"),
+        InlineKeyboardButton("👑 پشتیبان‌گیری", callback_data="admin_backup")
     )
     
     status_text = f"""
@@ -436,6 +605,8 @@ def admin_command(message):
 📥 کل دانلودها: {stats['total_downloads']}
 📊 دانلود امروز: {stats['today_downloads']}
 🔒 بلاک شده: {stats['blocked_users']}
+👑 ادمین‌ها: {stats['total_admins']}
+📢 عضو کانال: {stats['users_joined_channel']}
 🟢 وضعیت: {'روشن' if db.is_bot_on() else 'خاموش'}
 
 لطفاً یکی از گزینه‌ها رو انتخاب کن:
@@ -472,6 +643,8 @@ def admin_callback(call):
 • کل: {stats['total_users']}
 • فعال امروز: {stats['today_active']}
 • بلاک شده: {stats['blocked_users']}
+• ادمین‌ها: {stats['total_admins']}
+• عضو کانال: {stats['users_joined_channel']}
 
 📥 **دانلودها:**
 • کل: {stats['total_downloads']}
@@ -484,7 +657,7 @@ def admin_callback(call):
         
         for user in users[:5]:
             name = user[2] or user[1] or 'ناشناس'
-            text += f"• `{user[0]}` | {name} | دانلود: {user[7]}\n"
+            text += f"• `{user[0]}` | {name} | دانلود: {user[7]} | روزانه: {user[10]}\n"
         
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
@@ -501,8 +674,9 @@ def admin_callback(call):
         text = "👥 **لیست کاربران:**\n\n"
         for user in users:
             status = "🔒" if user[6] else "✅"
+            admin = "👑" if user[8] else ""
             name = user[2] or user[1] or 'ناشناس'
-            text += f"{status} `{user[0]}` | {name} | دانلود: {user[7]}\n"
+            text += f"{admin}{status} `{user[0]}` | {name} | دانلود: {user[7]} | روزانه: {user[10]}\n"
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
     
     elif action == "downloads":
@@ -518,6 +692,129 @@ def admin_callback(call):
         db.execute("UPDATE settings SET value = '0' WHERE key = 'total_downloads'")
         bot.answer_callback_query(call.id, "✅ آمار ریست شد")
         bot.edit_message_text("✅ تمام آمار با موفقیت ریست شد", call.message.chat.id, call.message.message_id)
+    
+    elif action == "force_join":
+        enabled = db.execute("SELECT value FROM settings WHERE key = 'force_join_enabled'", fetch_one=True)
+        channel = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel'", fetch_one=True)
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ فعال", callback_data="force_join_on"),
+            InlineKeyboardButton("❌ غیرفعال", callback_data="force_join_off"),
+            InlineKeyboardButton("📝 تنظیم کانال", callback_data="force_join_set"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        
+        text = f"""
+🔐 **تنظیمات عضویت اجباری**
+
+وضعیت فعلی: {'✅ فعال' if enabled and enabled[0] == 'True' else '❌ غیرفعال'}
+کانال: {channel[0] if channel else 'تنظیم نشده'}
+
+لطفاً یکی از گزینه‌ها رو انتخاب کن:
+        """
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif action == "daily_limit":
+        enabled = db.execute("SELECT value FROM settings WHERE key = 'daily_limit_enabled'", fetch_one=True)
+        limit = db.execute("SELECT value FROM settings WHERE key = 'daily_limit_count'", fetch_one=True)
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ فعال", callback_data="daily_limit_on"),
+            InlineKeyboardButton("❌ غیرفعال", callback_data="daily_limit_off"),
+            InlineKeyboardButton("📝 تنظیم تعداد", callback_data="daily_limit_set"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        
+        text = f"""
+📊 **محدودیت دانلود روزانه**
+
+وضعیت فعلی: {'✅ فعال' if enabled and enabled[0] == 'True' else '❌ غیرفعال'}
+تعداد مجاز در روز: {limit[0] if limit else '۵'}
+
+لطفاً یکی از گزینه‌ها رو انتخاب کن:
+        """
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('force_join_', 'daily_limit_')))
+def settings_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
+        return
+    
+    if call.data == "force_join_on":
+        db.set_force_join(True)
+        bot.answer_callback_query(call.id, "✅ عضویت اجباری فعال شد")
+        bot.edit_message_text("✅ عضویت اجباری با موفقیت فعال شد", call.message.chat.id, call.message.message_id)
+    
+    elif call.data == "force_join_off":
+        db.set_force_join(False)
+        bot.answer_callback_query(call.id, "✅ عضویت اجباری غیرفعال شد")
+        bot.edit_message_text("✅ عضویت اجباری با موفقیت غیرفعال شد", call.message.chat.id, call.message.message_id)
+    
+    elif call.data == "force_join_set":
+        bot.edit_message_text("📝 **لطفاً آیدی کانال رو بفرست** (مثال: @mychannel):", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, set_force_join_channel)
+    
+    elif call.data == "daily_limit_on":
+        db.set_daily_limit(True)
+        bot.answer_callback_query(call.id, "✅ محدودیت روزانه فعال شد")
+        bot.edit_message_text("✅ محدودیت دانلود روزانه با موفقیت فعال شد", call.message.chat.id, call.message.message_id)
+    
+    elif call.data == "daily_limit_off":
+        db.set_daily_limit(False)
+        bot.answer_callback_query(call.id, "✅ محدودیت روزانه غیرفعال شد")
+        bot.edit_message_text("✅ محدودیت دانلود روزانه با موفقیت غیرفعال شد", call.message.chat.id, call.message.message_id)
+    
+    elif call.data == "daily_limit_set":
+        bot.edit_message_text("📝 **لطفاً تعداد مجاز دانلود در روز رو بفرست** (مثال: 5):", call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, set_daily_limit_count)
+
+def set_force_join_channel(message):
+    channel = message.text.strip()
+    if channel.startswith('@'):
+        db.set_force_join(None, channel)
+        bot.reply_to(message, f"✅ کانال {channel} با موفقیت ثبت شد.")
+    else:
+        bot.reply_to(message, "❌ لطفاً آیدی رو با @ شروع کن (مثال: @mychannel)")
+
+def set_daily_limit_count(message):
+    try:
+        limit = int(message.text.strip())
+        if limit > 0:
+            db.set_daily_limit(None, limit)
+            bot.reply_to(message, f"✅ محدودیت دانلود روزانه به {limit} تنظیم شد.")
+        else:
+            bot.reply_to(message, "❌ لطفاً یک عدد مثبت وارد کن.")
+    except:
+        bot.reply_to(message, "❌ لطفاً یک عدد معتبر وارد کن.")
+
+@bot.callback_query_handler(func=lambda call: call.data == "check_join")
+def check_join_callback(call):
+    user_id = call.from_user.id
+    
+    if db.check_force_join(user_id):
+        db.mark_joined_channel(user_id)
+        bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
+        bot.edit_message_text("✅ عضویت شما تأیید شد. حالا می‌تونید از ربات استفاده کنید.", call.message.chat.id, call.message.message_id)
+        
+        # ارسال مجدد پیام خوش‌آمدگویی
+        welcome_text = """
+🎬 **ربات دانلود از همه سایت‌ها**
+
+🔹 لینک هر ویدیو، عکس، فایل یا موزیک رو بفرست
+🔹 پشتیبانی از یوتیوب، اینستاگرام، تیک‌تاک، توییتر و هزاران سایت دیگر
+🔹 حداکثر حجم: ۳۰۰ مگابایت
+
+🚀 **نحوه استفاده:**
+1️⃣ لینک رو بفرست
+2️⃣ فرمت مورد نظر رو انتخاب کن
+3️⃣ منتظر دانلود بمون
+        """
+        bot.send_message(user_id, welcome_text, parse_mode="Markdown")
+    else:
+        bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
 
 def broadcast_handler(message):
     msg_text = message.text
@@ -530,7 +827,7 @@ def broadcast_handler(message):
     
     for user in users:
         user_id = user[0]
-        if not user[6]:
+        if not user[6]:  # اگر بلاک نبود
             try:
                 bot.send_message(user_id, f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
                 sent += 1
@@ -545,10 +842,10 @@ def block_handler(message):
     try:
         user_id = int(message.text.strip())
         
-        user = db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetch_one=True)
+        user = db.get_user_info(user_id)
         
         if user:
-            if user[6]:
+            if user[6]:  # اگر بلاک است
                 db.unblock_user(user_id)
                 bot.reply_to(message, f"✅ کاربر {user_id} آنبلاک شد.")
             else:
@@ -569,6 +866,19 @@ def handle_message(message):
     user_id = message.from_user.id
     
     db.add_user(user_id, message.from_user.username, message.from_user.first_name, message.from_user.last_name)
+    
+    # بررسی عضویت اجباری
+    if not db.check_force_join(user_id):
+        channel = db.execute("SELECT value FROM settings WHERE key = 'force_join_channel'", fetch_one=True)
+        channel_link = f"https://t.me/{channel[0].replace('@', '')}" if channel else ""
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("✅ عضویت", url=channel_link))
+        markup.add(InlineKeyboardButton("🔄 بررسی عضویت", callback_data="check_join"))
+        
+        force_msg = config.FORCE_JOIN_MESSAGE.format(channel_link=channel_link)
+        bot.reply_to(message, force_msg, reply_markup=markup, parse_mode="Markdown")
+        return
     
     if not url.startswith(('http://', 'https://')):
         bot.reply_to(message, "❌ لطفاً یک لینک معتبر بفرست.")
@@ -741,6 +1051,7 @@ HTML_TEMPLATE = """
         .btn-danger { background: #f44336; color: white; }
         .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
         .btn-warning { background: #ff9800; color: white; }
+        .btn-info { background: #17a2b8; color: white; }
         .form-group { margin-bottom: 20px; }
         .form-group label { display: block; color: #333; margin-bottom: 8px; font-weight: bold; }
         .form-control {
@@ -773,7 +1084,7 @@ HTML_TEMPLATE = """
 <body>
     <div class="container">
         <div class="header">
-            <h1>🤖 پنل مدیریت ربات</h1>
+            <h1>🤖 پنل مدیریت ربات دانلود</h1>
             <p>خوش آمدید، ادمین</p>
             <div class="status-badge {% if bot_status == 'ON' %}status-on{% else %}status-off{% endif %}">
                 وضعیت ربات: {% if bot_status == 'ON' %}🟢 روشن{% else %}🔴 خاموش{% endif %}
@@ -851,8 +1162,8 @@ HTML_TEMPLATE = """
                         <th>آیدی</th>
                         <th>نام</th>
                         <th>دانلودها</th>
+                        <th>روزانه</th>
                         <th>وضعیت</th>
-                        <th>آخرین فعالیت</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -861,32 +1172,8 @@ HTML_TEMPLATE = """
                         <td>{{ user[0] }}</td>
                         <td>{{ user[2] or user[1] or 'ناشناس' }}</td>
                         <td>{{ user[7] }}</td>
+                        <td>{{ user[10] }}</td>
                         <td>{% if user[6] %}🔒 بلاک{% else %}✅ فعال{% endif %}</td>
-                        <td>{{ user[5][:16] if user[5] else 'نامشخص' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="section">
-            <h2>📥 آخرین دانلودها</h2>
-            <table class="table">
-                <thead>
-                    <tr>
-                        <th>کاربر</th>
-                        <th>فرمت</th>
-                        <th>عنوان</th>
-                        <th>زمان</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for dl in recent_downloads %}
-                    <tr>
-                        <td>{{ dl[9] or dl[8] or dl[1] }}</td>
-                        <td>{{ dl[3] }}</td>
-                        <td>{{ dl[4][:30] }}...</td>
-                        <td>{{ dl[7][:16] }}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -894,7 +1181,7 @@ HTML_TEMPLATE = """
         </div>
         
         <div class="footer">
-            <p>ربات دانلود از همه سایت‌ها | ساخته شده با ❤️</p>
+            <p>ربات دانلود از همه سایت‌ها | ساخته شده با ❤️ | نسخه 4.0</p>
             <p>Webhook: {{ webhook_url }}</p>
         </div>
     </div>
@@ -907,14 +1194,12 @@ def home():
     stats = db.get_stats()
     bot_status = db.execute("SELECT value FROM settings WHERE key = 'bot_status'", fetch_one=True)
     recent_users = db.get_users(limit=10)
-    recent_downloads = db.get_recent_downloads(limit=10)
     
     return render_template_string(
         HTML_TEMPLATE,
         stats=stats,
         bot_status=bot_status[0] if bot_status else 'ON',
         recent_users=recent_users,
-        recent_downloads=recent_downloads,
         webhook_url=config.WEBHOOK_URL
     )
 
@@ -974,8 +1259,6 @@ def setup_webhook():
         
         if success:
             logger.info(f"✅ Webhook تنظیم شد: {config.WEBHOOK_URL}")
-            webhook_info = bot.get_webhook_info()
-            logger.info(f"📡 اطلاعات Webhook: {webhook_info}")
             return True
         else:
             logger.error("❌ خطا در تنظیم Webhook")
