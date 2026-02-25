@@ -48,9 +48,10 @@ class Database:
         self.conn=sqlite3.connect("database/bot.db",check_same_thread=False)
         self.cursor=self.conn.cursor()
         self.init_db()
+        self.start_keep_alive()
 
     def init_db(self):
-        # جدول کاربران
+        # کاربران
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS users(
             user_id INTEGER PRIMARY KEY,
@@ -63,7 +64,7 @@ class Database:
             is_admin INTEGER DEFAULT 0
         )
         """)
-        # جدول گروه‌ها
+        # گروه‌ها
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS groups(
             chat_id INTEGER PRIMARY KEY,
@@ -73,7 +74,7 @@ class Database:
             is_active INTEGER DEFAULT 1
         )
         """)
-        # جدول دانلودها
+        # دانلودها
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS downloads(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,19 +88,20 @@ class Database:
             platform TEXT
         )
         """)
-        # جدول تنظیمات
+        # تنظیمات
         self.cursor.execute("""
         CREATE TABLE IF NOT EXISTS settings(
             key TEXT PRIMARY KEY,
             value TEXT
         )
         """)
-        # پیش‌فرض‌ها
         defaults=[
             ("bot_status","ON"),
             ("total_users","0"),
             ("total_downloads","0"),
-            ("total_groups","0")
+            ("total_groups","0"),
+            ("group_mode","ON"),
+            ("private_mode","ON")
         ]
         for k,v in defaults:
             self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",(k,v))
@@ -107,7 +109,24 @@ class Database:
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)",(ADMIN_ID,))
         self.conn.commit()
 
-    # مدیریت کاربران
+    def start_keep_alive(self):
+        def ping():
+            while True:
+                try:
+                    self.cursor.execute("SELECT 1")
+                    self.conn.commit()
+                except:
+                    self.reconnect()
+                time.sleep(60)
+        threading.Thread(target=ping,daemon=True).start()
+
+    def reconnect(self):
+        try: self.conn.close()
+        except: pass
+        self.conn=sqlite3.connect("database/bot.db",check_same_thread=False)
+        self.cursor=self.conn.cursor()
+
+    # کاربران
     def add_user(self,user_id,username,first_name):
         now=datetime.now()
         self.cursor.execute("SELECT * FROM users WHERE user_id=?",(user_id,))
@@ -170,6 +189,30 @@ class Database:
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
 
+    def get_stats(self):
+        today=datetime.now().strftime('%Y-%m-%d')
+        self.cursor.execute("SELECT COUNT(*),SUM(download_count) FROM users")
+        total_users,total_downloads=self.cursor.fetchone()
+        self.cursor.execute("SELECT COUNT(*) FROM groups")
+        total_groups=self.cursor.fetchone()[0]
+        self.cursor.execute("SELECT COUNT(*) FROM users WHERE date(last_use)=date('now')")
+        active_today=self.cursor.fetchone()[0]
+        self.cursor.execute("SELECT COUNT(*) FROM groups WHERE date(last_active)=date('now')")
+        active_groups=self.cursor.fetchone()[0]
+        self.cursor.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1")
+        blocked=self.cursor.fetchone()[0]
+        return {
+            "total_users":total_users,
+            "total_downloads":total_downloads or 0,
+            "total_groups":total_groups,
+            "active_today":active_today,
+            "active_groups":active_groups,
+            "blocked":blocked,
+            "bot_status":self.get_setting("bot_status"),
+            "group_mode":self.get_setting("group_mode"),
+            "private_mode":self.get_setting("private_mode")
+        }
+
     def get_users(self,limit=20):
         self.cursor.execute("""
         SELECT user_id, username, first_name, download_count, is_blocked
@@ -177,12 +220,20 @@ class Database:
         """,(limit,))
         return self.cursor.fetchall()
 
-    def get_recent_downloads(self,limit=10):
+    def get_groups(self,limit=20):
+        self.cursor.execute("""
+        SELECT chat_id, title, added_date, last_active, is_active
+        FROM groups ORDER BY last_active DESC LIMIT ?
+        """,(limit,))
+        return self.cursor.fetchall()
+
+    def get_recent_downloads(self,limit=20):
         self.cursor.execute("""
         SELECT user_id,url,platform,timestamp FROM downloads ORDER BY timestamp DESC LIMIT ?
         """,(limit,))
         return self.cursor.fetchall()
 
+# ================= ربات و وب =================
 db=Database()
 bot=telebot.TeleBot(TOKEN)
 app=Flask(__name__)
@@ -191,40 +242,28 @@ app=Flask(__name__)
 def download_video(url,chat_id,user_id,is_group=False):
     try:
         platform=detect_platform(url)
-        ydl_opts={
-            "quiet":True,
-            "no_warnings":True,
-            "outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-            "format":"bestvideo+bestaudio/best",
-            "max_filesize":MAX_FILE_SIZE
-        }
+        ydl_opts={"quiet":True,"no_warnings":True,"outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s"}
         msg=bot.send_message(chat_id,f"⏳ در حال دانلود از {platform} ...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info=ydl.extract_info(url,download=True)
-
         if not info:
             bot.edit_message_text("❌ خطا در دریافت اطلاعات",chat_id,msg.message_id)
             return
-
         title=clean_filename(info.get("title","file"))
         filename=None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
                 filename=os.path.join(DOWNLOAD_PATH,f)
                 break
-
         if not filename or not os.path.exists(filename):
             bot.edit_message_text("❌ فایل پیدا نشد",chat_id,msg.message_id)
             return
-
         size=os.path.getsize(filename)
         if size>MAX_FILE_SIZE:
             os.remove(filename)
-            bot.edit_message_text("❌ حجم فایل بیشتر از 300MB",chat_id,msg.message_id)
+            bot.edit_message_text("❌ حجم فایل بیشتر از ۳۰۰MB",chat_id,msg.message_id)
             return
-
         bot.edit_message_text("📤 در حال آپلود ...",chat_id,msg.message_id)
-
         with open(filename,"rb") as f:
             if filename.endswith((".mp4",".mkv",".webm")):
                 bot.send_video(chat_id,f,caption=f"✅ {title}")
@@ -235,16 +274,14 @@ def download_video(url,chat_id,user_id,is_group=False):
             else:
                 bot.send_document(chat_id,f,caption=f"✅ {title}")
                 format_type="file"
-
         source="group" if is_group else "private"
         db.add_download(user_id,chat_id,url,format_type,size,source,platform)
         os.remove(filename)
         bot.delete_message(chat_id,msg.message_id)
-
     except Exception as e:
         bot.send_message(chat_id,f"❌ خطا:\n{str(e)[:200]}")
 
-# ================= دستورات =================
+# ================= تلگرام =================
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
@@ -254,18 +291,22 @@ def start(message):
 def admin_panel(message):
     if message.from_user.id!=ADMIN_ID:
         return
-    status=db.get_setting("bot_status")
+    stats=db.get_stats()
     users=db.get_users(10)
     downloads=db.get_recent_downloads(10)
-    markup=InlineKeyboardMarkup()
+    groups=db.get_groups(10)
+    markup=InlineKeyboardMarkup(row_width=2)
     markup.add(InlineKeyboardButton("🟢 روشن",callback_data="on"))
     markup.add(InlineKeyboardButton("🔴 خاموش",callback_data="off"))
-    text=f"وضعیت ربات: {status}\n\nآخرین کاربران:\n"
+    text=f"👑 پنل مدیریت\n\nآمار:\nکل کاربران: {stats['total_users']}\nدانلودها: {stats['total_downloads']}\nگروه‌ها: {stats['total_groups']}\nفعال امروز: {stats['active_today']}\nبلاک شده: {stats['blocked']}\n\nآخرین کاربران:\n"
     for u in users:
         text+=f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
     text+="\nآخرین دانلودها:\n"
     for d in downloads:
         text+=f"{d[0]} | {d[1]} | {d[2]} | {d[3][:16]}\n"
+    text+="\nآخرین گروه‌ها:\n"
+    for g in groups:
+        text+=f"{g[0]} | {g[1]} | {'فعال' if g[4] else 'غیرفعال'}\n"
     bot.send_message(message.chat.id,text,reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -283,27 +324,103 @@ def handle_message(message):
     if db.get_setting("bot_status")=="OFF": return
     if db.is_blocked(message.from_user.id): return
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
+    if message.chat.type in ["group","supergroup"]:
+        db.add_group(message.chat.id,message.chat.title)
     urls=extract_urls(message.text)
     if not urls: return
     url=urls[0]
     bot.reply_to(message,"✅ لینک دریافت شد، شروع دانلود...")
     threading.Thread(target=download_video,args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),daemon=True).start()
 
-# ================= وب پنل =================
+# ================= وب پنل حرفه‌ای =================
 HTML_TEMPLATE="""
-<html><head><meta charset="utf-8"><title>Bot Panel</title></head>
-<body style="font-family:tahoma;text-align:center">
-<h2>پنل مدیریت ربات</h2>
-<p>وضعیت: {{status}}</p>
-<a href="/toggle/on">🟢 روشن</a> | <a href="/toggle/off">🔴 خاموش</a>
-</body></html>
+<!DOCTYPE html>
+<html dir="rtl">
+<head>
+<meta charset="utf-8">
+<title>پنل مدیریت ربات</title>
+<style>
+body{font-family:tahoma;background:#f5f6fa;padding:20px;}
+h1{text-align:center;color:#333;}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-bottom:20px;}
+.stat-card{background:#fff;padding:20px;border-radius:10px;text-align:center;box-shadow:0 0 10px #ccc;}
+.stat-value{font-size:28px;color:#667eea;font-weight:bold;}
+.btn{padding:10px 20px;border-radius:5px;text-decoration:none;margin:5px;color:#fff;}
+.btn-success{background:#4caf50;} .btn-danger{background:#f44336;}
+table{width:100%;border-collapse:collapse;margin-top:20px;}
+th,td{border:1px solid #ddd;padding:8px;text-align:center;}
+th{background:#667eea;color:#fff;}
+</style>
+</head>
+<body>
+<h1>🤖 پنل مدیریت ربات</h1>
+<div class="stats-grid">
+<div class="stat-card"><div>👥 کاربران کل</div><div class="stat-value">{{ stats.total_users }}</div></div>
+<div class="stat-card"><div>📥 دانلود کل</div><div class="stat-value">{{ stats.total_downloads }}</div></div>
+<div class="stat-card"><div>🟢 فعال امروز</div><div class="stat-value">{{ stats.active_today }}</div></div>
+<div class="stat-card"><div>🔒 بلاک شده</div><div class="stat-value">{{ stats.blocked }}</div></div>
+</div>
+<div style="text-align:center;">
+<a href="/toggle/on" class="btn btn-success">🟢 روشن</a>
+<a href="/toggle/off" class="btn btn-danger">🔴 خاموش</a>
+</div>
+
+<h2>آخرین کاربران</h2>
+<table>
+<tr><th>ID</th><th>نام</th><th>دانلودها</th><th>وضعیت</th></tr>
+{% for u in users %}
+<tr>
+<td>{{ u[0] }}</td>
+<td>{{ u[2] or u[1] }}</td>
+<td>{{ u[3] }}</td>
+<td>{{ '🔒' if u[4] else '✅' }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>آخرین دانلودها</h2>
+<table>
+<tr><th>UserID</th><th>لینک</th><th>پلتفرم</th><th>زمان</th></tr>
+{% for d in downloads %}
+<tr>
+<td>{{ d[0] }}</td>
+<td>{{ d[1] }}</td>
+<td>{{ d[2] }}</td>
+<td>{{ d[3][:16] }}</td>
+</tr>
+{% endfor %}
+</table>
+
+<h2>آخرین گروه‌ها</h2>
+<table>
+<tr><th>ID</th><th>نام گروه</th><th>وضعیت</th></tr>
+{% for g in groups %}
+<tr>
+<td>{{ g[0] }}</td>
+<td>{{ g[1] }}</td>
+<td>{{ 'فعال' if g[4] else 'غیرفعال' }}</td>
+</tr>
+{% endfor %}
+</table>
+
+</body>
+</html>
 """
+
 @app.route('/')
-def home(): return render_template_string(HTML_TEMPLATE,status=db.get_setting("bot_status"))
+def home():
+    stats=db.get_stats()
+    users=db.get_users(20)
+    downloads=db.get_recent_downloads(20)
+    groups=db.get_groups(20)
+    return render_template_string(HTML_TEMPLATE,stats=stats,users=users,downloads=downloads,groups=groups)
+
 @app.route('/toggle/<status>')
 def toggle(status):
-    if status in ["on","off"]: db.set_setting("bot_status","ON" if status=="on" else "OFF")
+    if status in ["on","off"]:
+        db.set_setting("bot_status","ON" if status=="on" else "OFF")
     return redirect('/')
+
 @app.route('/webhook',methods=['POST'])
 def webhook():
     json_str=request.get_data().decode('utf-8')
@@ -316,5 +433,5 @@ if __name__=="__main__":
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
-    print("🚀 ربات آماده است")
+    print("🚀 ربات Ultra-Pro آماده است")
     app.run(host="0.0.0.0",port=PORT)
