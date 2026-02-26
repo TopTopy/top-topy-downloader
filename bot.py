@@ -5,6 +5,7 @@ import time
 import re
 import random
 import json
+import subprocess
 from datetime import datetime
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -29,6 +30,22 @@ REQUIRED_CHANNELS = [
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
+# ================= بررسی نصب بودن ffmpeg و nodejs =================
+def check_dependencies():
+    try:
+        subprocess.run(["ffmpeg", "-version"], capture_output=True)
+        print("✅ ffmpeg نصب است")
+    except:
+        print("⚠️ ffmpeg نصب نیست - برای دانلود صوتی نیاز است")
+    
+    try:
+        subprocess.run(["node", "--version"], capture_output=True)
+        print("✅ Node.js نصب است")
+    except:
+        print("⚠️ Node.js نصب نیست - برای یوتیوب ممکن است مشکل پیش بیاید")
+
+check_dependencies()
+
 # ================= ابزار =================
 def clean_filename(name):
     return re.sub(r'[\\/*?:"<>|]', "", name)
@@ -50,14 +67,26 @@ def detect_platform(url):
         return "Facebook"
     if "pinterest" in url or "pin.it" in url:
         return "Pinterest"
+    if "reddit" in url:
+        return "Reddit"
+    if "twitch" in url:
+        return "Twitch"
+    if "vimeo" in url:
+        return "Vimeo"
+    if "dailymotion" in url:
+        return "Dailymotion"
+    if "soundcloud" in url:
+        return "SoundCloud"
+    if "spotify" in url:
+        return "Spotify"
     return "Other"
 
 # ================= تابع تشخیص و دنبال کردن لینک‌های کوتاه =================
 def resolve_short_url(url):
     try:
-        short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be']
+        short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be', 'instagram.com/p/']
         parsed = urlparse(url)
-        if any(domain in parsed.netloc for domain in short_domains):
+        if any(domain in parsed.netloc for domain in short_domains) or 'instagram.com/p/' in url:
             response = requests.head(url, allow_redirects=True, timeout=10)
             return response.url
         return url
@@ -275,25 +304,22 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تخصصی ترین تابع دانلود پینترست =================
+# ================= تابع دانلود اختصاصی پینترست =================
 def download_pinterest(url, chat_id, user_id, is_group=False):
     try:
         bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
         
-        # روش 1: استفاده از api جایگزین
+        # روش 1: API رسمی پینترست
         try:
-            # تبدیل لینک کوتاه به لینک اصلی
             if "pin.it" in url:
                 response = requests.head(url, allow_redirects=True)
                 url = response.url
             
-            # استخراج ID پین
             pin_id = None
             if "/pin/" in url:
                 pin_id = url.split("/pin/")[-1].split("/")[0].split("?")[0]
             
             if pin_id:
-                # استفاده از API غیررسمی پینترست
                 api_url = f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -307,18 +333,15 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                         if pin_data.get("images"):
                             img_url = pin_data["images"].get("orig", {}).get("url")
                             if img_url:
-                                # دانلود عکس
                                 img_response = requests.get(img_url, headers=headers)
                                 if img_response.status_code == 200:
                                     filename = f"{DOWNLOAD_PATH}/pinterest_{pin_id}.jpg"
                                     with open(filename, "wb") as f:
                                         f.write(img_response.content)
                                     
-                                    # ارسال عکس
                                     with open(filename, "rb") as f:
                                         bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
                                     
-                                    # آپدیت آمار
                                     db.add_download(user_id, chat_id, url, "photo", len(img_response.content), 
                                                   "group" if is_group else "private", "Pinterest")
                                     os.remove(filename)
@@ -326,12 +349,11 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
         except Exception as e:
             print(f"خطا در روش API: {e}")
         
-        # روش 2: استفاده از yt-dlp با تنظیمات پیشرفته
+        # روش 2: yt-dlp با impersonate
         try:
             user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2.1 Safari/605.1.15"
             ]
             
             ydl_opts = {
@@ -342,6 +364,7 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                 "force_generic_extractor": True,
                 "socket_timeout": 30,
                 "retries": 5,
+                "impersonate": "chrome",  # مهم: شبیه‌سازی مرورگر
                 "headers": {
                     "User-Agent": random.choice(user_agents),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
@@ -358,7 +381,6 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                 if info:
                     title = clean_filename(info.get("title", "pinterest_image"))
                     
-                    # پیدا کردن فایل
                     filename = None
                     for f in os.listdir(DOWNLOAD_PATH):
                         if title in f:
@@ -386,21 +408,18 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
         
         # روش 3: راهنمایی کاربر
         bot.send_message(chat_id, 
-            "❌ **متأسفانه پینترست محدودیت شدید داره**\n\n"
+            "❌ **پینترست محدودیت دارد**\n\n"
             "🔧 **راه‌حل:**\n"
             "1️⃣ لینک رو توی مرورگر باز کن\n"
-            "2️⃣ عکس رو ذخیره کن\n"
-            "3️⃣ برام بفرستش\n\n"
-            "📝 یا لینک مستقیم عکس رو برام بفرست", 
+            "2️⃣ عکس رو ذخیره کن و برام بفرست", 
             parse_mode="Markdown")
-        
         return False
         
     except Exception as e:
         bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
         return False
 
-# ================= تابع دانلود عمومی =================
+# ================= تابع دانلود عمومی با پشتیبانی کامل =================
 def download_video(url, chat_id, user_id, is_group=False):
     try:
         platform = detect_platform(url)
@@ -412,16 +431,63 @@ def download_video(url, chat_id, user_id, is_group=False):
         
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
 
-        # تنظیمات پایه
+        # تنظیمات پیشرفته با آخرین متدهای yt-dlp
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
             "ignoreerrors": True,
             "extract_flat": False,
+            "socket_timeout": 30,
+            "retries": 5,
+            "fragment_retries": 5,
+            "impersonate": "chrome",  # مهم: شبیه‌سازی مرورگر
         }
 
-        if is_audio:
+        # تنظیمات اختصاصی برای هر پلتفرم
+        if platform == "YouTube":
+            ydl_opts.update({
+                "format": "best[filesize<300M]/best",
+                "extractor_args": {"youtube": {"player_client": ["android", "web"]}},
+            })
+        
+        elif platform == "TikTok":
+            ydl_opts.update({
+                "format": "best",
+                "headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://www.tiktok.com/",
+                }
+            })
+        
+        elif platform == "Instagram":
+            ydl_opts.update({
+                "format": "best",
+                "headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://www.instagram.com/",
+                }
+            })
+        
+        elif platform == "Twitter":
+            ydl_opts.update({
+                "format": "best",
+                "headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://twitter.com/",
+                }
+            })
+        
+        elif platform == "Facebook":
+            ydl_opts.update({
+                "format": "best",
+                "headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Referer": "https://www.facebook.com/",
+                }
+            })
+        
+        elif is_audio:
             ydl_opts.update({
                 "format": "bestaudio/best",
                 "postprocessors": [{
@@ -430,14 +496,25 @@ def download_video(url, chat_id, user_id, is_group=False):
                     "preferredquality": "192",
                 }],
             })
+        
         else:
             ydl_opts["format"] = "best[filesize<300M]/best"
 
         msg = bot.send_message(chat_id, f"⏳ **در حال دریافت از {platform} ...**", parse_mode="Markdown")
 
         # دریافت اطلاعات
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        info = None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+        except Exception as e:
+            # اگر خطا داد، بدون impersonate امتحان کن
+            if "impersonate" in str(e):
+                ydl_opts.pop("impersonate", None)
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            else:
+                raise e
 
         if info is None:
             bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
@@ -492,7 +569,13 @@ def download_video(url, chat_id, user_id, is_group=False):
         bot.delete_message(chat_id, msg.message_id)
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+        error_msg = str(e)
+        if "403" in error_msg:
+            bot.send_message(chat_id, "❌ **خطای 403: دسترسی ممنوع**\nسایت درخواست را بلاک کرده. چند لحظه بعد دوباره تلاش کن.", parse_mode="Markdown")
+        elif "429" in error_msg:
+            bot.send_message(chat_id, "❌ **خطای 429: درخواست بیش از حد**\nلطفاً کمی صبر کن و دوباره تلاش کن.", parse_mode="Markdown")
+        else:
+            bot.send_message(chat_id, f"❌ **خطا:**\n`{error_msg[:200]}`", parse_mode="Markdown")
 
 # ================= پنل ادمین =================
 @bot.message_handler(commands=['admin'])
@@ -778,4 +861,5 @@ if __name__ == "__main__":
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     print(f"🌐 Webhook: {WEBHOOK_URL}")
     print("✅ پنل ادمین فعال است - با دستور /admin")
+    print("✅ پشتیبانی از یوتیوب، تیک‌تاک، اینستاگرام، پینترست و...")
     app.run(host="0.0.0.0", port=PORT)
