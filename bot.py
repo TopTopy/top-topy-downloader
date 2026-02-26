@@ -9,6 +9,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 import sqlite3
+import requests  # اضافه شد برای تشخیص لینک‌های کوتاه
+from urllib.parse import urlparse, urljoin
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -44,9 +46,35 @@ def detect_platform(url):
         return "Twitter"
     if "facebook" in url or "fb.com" in url:
         return "Facebook"
-    if "pinterest" in url:
+    if "pinterest" in url or "pin.it" in url:  # اضافه شد pin.it
         return "Pinterest"
     return "Other"
+
+# ================= تابع تشخیص و دنبال کردن لینک‌های کوتاه =================
+def resolve_short_url(url):
+    """لینک‌های کوتاه شده (مثل pin.it) رو به آدرس اصلی تبدیل می‌کنه"""
+    try:
+        # سایت‌هایی که لینک کوتاه دارند
+        short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be']
+        
+        # بررسی میکنیم ببینیم لینک کوتاه هست یا نه
+        parsed = urlparse(url)
+        if any(domain in parsed.netloc for domain in short_domains):
+            # با allow_redirects=False فقط هدر رو می‌گیریم تا ببینیم ریدایرکت داره یا نه
+            response = requests.head(url, allow_redirects=False, timeout=10)
+            
+            # اگه status_code 3xx بود یعنی ریدایرکت شده
+            if 300 <= response.status_code < 400:
+                redirect_url = response.headers.get('Location')
+                if redirect_url:
+                    # اگه آدرس نسبی بود، به آدرس مطلق تبدیلش کن
+                    if not redirect_url.startswith('http'):
+                        redirect_url = urljoin(url, redirect_url)
+                    return redirect_url
+        return url
+    except Exception as e:
+        print(f"خطا در تشخیص لینک کوتاه: {e}")
+        return url
 
 # ================= دیتابیس =================
 class Database:
@@ -260,9 +288,17 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود با پشتیبانی کامل از Pinterest =================
+# ================= تابع دانلود با پشتیبانی کامل از Pinterest و لینک‌های کوتاه =================
 def download_video(url, chat_id, user_id, is_group=False):
     try:
+        # ====== تشخیص لینک کوتاه ======
+        original_url = url
+        resolved_url = resolve_short_url(url)
+        
+        if resolved_url != original_url:
+            bot.send_message(chat_id, f"🔗 **لینک کوتاه تشخیص داده شد.**\nدر حال هدایت به آدرس اصلی...", parse_mode="Markdown")
+            url = resolved_url
+        
         platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
 
@@ -453,6 +489,8 @@ def start(message):
         "• YouTube | TikTok | Instagram\n"
         "• Twitter | Facebook | Pinterest\n"
         "• و بیش از ۱۰۰۰ سایت دیگر\n\n"
+        "✅ **لینک‌های کوتاه:**\n"
+        "• پشتیبانی کامل از pin.it و سایر لینک‌های کوتاه\n\n"
         "✅ **حجم مجاز:** ۳۰۰ مگابایت\n\n"
         "📌 فقط کافیه لینک رو برای من بفرستی!"
     )
@@ -475,6 +513,8 @@ def check_join_callback(call):
             "• YouTube | TikTok | Instagram\n"
             "• Twitter | Facebook | Pinterest\n"
             "• و بیش از ۱۰۰۰ سایت دیگر\n\n"
+            "✅ **لینک‌های کوتاه:**\n"
+            "• پشتیبانی کامل از pin.it و سایر لینک‌های کوتاه\n\n"
             "📌 فقط کافیه لینک رو برای من بفرستی!"
         )
         bot.send_message(call.from_user.id, welcome_text)
@@ -656,5 +696,5 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     print(f"🌐 Webhook: {WEBHOOK_URL}")
-    print(f"✅ پشتیبانی از Pinterest فعال شد")
+    print(f"✅ پشتیبانی از Pinterest و لینک‌های کوتاه فعال شد")
     app.run(host="0.0.0.0", port=PORT)
