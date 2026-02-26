@@ -13,7 +13,7 @@ import sqlite3
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
-MAX_FILE_SIZE = 300*1024*1024
+MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
@@ -42,8 +42,10 @@ def detect_platform(url):
         return "Instagram"
     if "twitter" in url or "x.com" in url:
         return "Twitter"
-    if "facebook" in url:
+    if "facebook" in url or "fb.com" in url:
         return "Facebook"
+    if "pinterest" in url:
+        return "Pinterest"
     return "Other"
 
 # ================= دیتابیس =================
@@ -96,17 +98,17 @@ class Database:
         )
         """)
         defaults = [
-            ("bot_status","ON"),
-            ("total_users","0"),
-            ("total_downloads","0"),
-            ("total_groups","0"),
-            ("group_mode","ON"),
-            ("private_mode","ON")
+            ("bot_status", "ON"),
+            ("total_users", "0"),
+            ("total_downloads", "0"),
+            ("total_groups", "0"),
+            ("group_mode", "ON"),
+            ("private_mode", "ON")
         ]
         for k, v in defaults:
-            self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)",(k,v))
+            self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
         # ادمین اصلی
-        self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)",(ADMIN_ID,))
+        self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)", (ADMIN_ID,))
         self.conn.commit()
 
     def start_keep_alive(self):
@@ -121,135 +123,134 @@ class Database:
         threading.Thread(target=ping, daemon=True).start()
 
     def reconnect(self):
-        try: self.conn.close()
-        except: pass
+        try:
+            self.conn.close()
+        except:
+            pass
         self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
         self.cursor = self.conn.cursor()
 
-    # کاربران
-    def add_user(self,user_id,username,first_name):
+    def add_user(self, user_id, username, first_name):
         now = datetime.now()
-        self.cursor.execute("SELECT * FROM users WHERE user_id=?",(user_id,))
+        self.cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         if self.cursor.fetchone():
             self.cursor.execute("UPDATE users SET last_use=?, username=?, first_name=? WHERE user_id=?",
-                                (now,username,first_name,user_id))
+                                (now, username, first_name, user_id))
         else:
             self.cursor.execute("""
             INSERT INTO users(user_id,username,first_name,joined_date,last_use)
             VALUES(?,?,?,?,?)
-            """,(user_id,username,first_name,now,now))
-            total=int(self.get_setting("total_users"))
-            self.set_setting("total_users",str(total+1))
+            """, (user_id, username, first_name, now, now))
+            total = int(self.get_setting("total_users"))
+            self.set_setting("total_users", str(total + 1))
         self.conn.commit()
 
-    def add_group(self,chat_id,title):
+    def add_group(self, chat_id, title):
         now = datetime.now()
-        self.cursor.execute("SELECT * FROM groups WHERE chat_id=?",(chat_id,))
+        self.cursor.execute("SELECT * FROM groups WHERE chat_id=?", (chat_id,))
         if self.cursor.fetchone():
-            self.cursor.execute("UPDATE groups SET last_active=?, title=? WHERE chat_id=?",(now,title,chat_id))
+            self.cursor.execute("UPDATE groups SET last_active=?, title=? WHERE chat_id=?", (now, title, chat_id))
         else:
             self.cursor.execute("""
             INSERT INTO groups(chat_id,title,added_date,last_active)
             VALUES(?,?,?,?)
-            """,(chat_id,title,now,now))
-            total=int(self.get_setting("total_groups"))
-            self.set_setting("total_groups",str(total+1))
+            """, (chat_id, title, now, now))
+            total = int(self.get_setting("total_groups"))
+            self.set_setting("total_groups", str(total + 1))
         self.conn.commit()
 
-    def add_download(self,user_id,chat_id,url,format_type,size,source,platform):
-        now=datetime.now()
+    def add_download(self, user_id, chat_id, url, format_type, size, source, platform):
+        now = datetime.now()
         self.cursor.execute("""
         INSERT INTO downloads(user_id,chat_id,url,format,size,timestamp,source,platform)
         VALUES(?,?,?,?,?,?,?,?)
-        """,(user_id,chat_id,url,format_type,size,now,source,platform))
-        self.cursor.execute("UPDATE users SET download_count=download_count+1 WHERE user_id=?",(user_id,))
-        total=int(self.get_setting("total_downloads"))
-        self.set_setting("total_downloads",str(total+1))
+        """, (user_id, chat_id, url, format_type, size, now, source, platform))
+        self.cursor.execute("UPDATE users SET download_count=download_count+1 WHERE user_id=?", (user_id,))
+        total = int(self.get_setting("total_downloads"))
+        self.set_setting("total_downloads", str(total + 1))
         self.conn.commit()
 
-    def get_setting(self,key):
-        self.cursor.execute("SELECT value FROM settings WHERE key=?",(key,))
-        r=self.cursor.fetchone()
+    def get_setting(self, key):
+        self.cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
+        r = self.cursor.fetchone()
         return r[0] if r else "0"
 
-    def set_setting(self,key,val):
-        self.cursor.execute("UPDATE settings SET value=? WHERE key=?",(val,key))
+    def set_setting(self, key, val):
+        self.cursor.execute("UPDATE settings SET value=? WHERE key=?", (val, key))
         self.conn.commit()
 
-    def is_blocked(self,user_id):
-        self.cursor.execute("SELECT is_blocked FROM users WHERE user_id=?",(user_id,))
-        r=self.cursor.fetchone()
-        return r and r[0]==1
+    def is_blocked(self, user_id):
+        self.cursor.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,))
+        r = self.cursor.fetchone()
+        return r and r[0] == 1
 
-    def block_user(self,user_id):
-        self.cursor.execute("UPDATE users SET is_blocked=1 WHERE user_id=?",(user_id,))
+    def block_user(self, user_id):
+        self.cursor.execute("UPDATE users SET is_blocked=1 WHERE user_id=?", (user_id,))
         self.conn.commit()
 
-    def unblock_user(self,user_id):
-        self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
+    def unblock_user(self, user_id):
+        self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?", (user_id,))
         self.conn.commit()
 
-    # بررسی عضویت در کانال‌ها
-    def check_membership(self,user_id):
+    def check_membership(self, user_id):
         try:
             for username, _ in REQUIRED_CHANNELS:
                 member = bot.get_chat_member(username, user_id)
-                if member.status not in ['member','administrator','creator']:
+                if member.status not in ['member', 'administrator', 'creator']:
                     return False
             return True
         except Exception as e:
             print(f"خطا در بررسی عضویت: {e}")
             return False
 
-    # آمار
     def get_stats(self):
-        today=datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now().strftime('%Y-%m-%d')
         self.cursor.execute("SELECT COUNT(*),SUM(download_count) FROM users")
-        total_users,total_downloads=self.cursor.fetchone()
+        total_users, total_downloads = self.cursor.fetchone()
         self.cursor.execute("SELECT COUNT(*) FROM groups")
-        total_groups=self.cursor.fetchone()[0]
+        total_groups = self.cursor.fetchone()[0]
         self.cursor.execute("SELECT COUNT(*) FROM users WHERE date(last_use)=date('now')")
-        active_today=self.cursor.fetchone()[0]
+        active_today = self.cursor.fetchone()[0]
         self.cursor.execute("SELECT COUNT(*) FROM groups WHERE date(last_active)=date('now')")
-        active_groups=self.cursor.fetchone()[0]
+        active_groups = self.cursor.fetchone()[0]
         self.cursor.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1")
-        blocked=self.cursor.fetchone()[0]
+        blocked = self.cursor.fetchone()[0]
         return {
-            "total_users":total_users or 0,
-            "total_downloads":total_downloads or 0,
-            "total_groups":total_groups or 0,
-            "active_today":active_today or 0,
-            "active_groups":active_groups or 0,
-            "blocked":blocked or 0,
-            "bot_status":self.get_setting("bot_status"),
-            "group_mode":self.get_setting("group_mode"),
-            "private_mode":self.get_setting("private_mode")
+            "total_users": total_users or 0,
+            "total_downloads": total_downloads or 0,
+            "total_groups": total_groups or 0,
+            "active_today": active_today or 0,
+            "active_groups": active_groups or 0,
+            "blocked": blocked or 0,
+            "bot_status": self.get_setting("bot_status"),
+            "group_mode": self.get_setting("group_mode"),
+            "private_mode": self.get_setting("private_mode")
         }
 
-    def get_users(self,limit=20):
+    def get_users(self, limit=20):
         self.cursor.execute("""
         SELECT user_id, username, first_name, download_count, is_blocked
         FROM users ORDER BY last_use DESC LIMIT ?
-        """,(limit,))
+        """, (limit,))
         return self.cursor.fetchall()
 
-    def get_groups(self,limit=20):
+    def get_groups(self, limit=20):
         self.cursor.execute("""
         SELECT chat_id, title, added_date, last_active, is_active
         FROM groups ORDER BY last_active DESC LIMIT ?
-        """,(limit,))
+        """, (limit,))
         return self.cursor.fetchall()
 
-    def get_recent_downloads(self,limit=20):
+    def get_recent_downloads(self, limit=20):
         self.cursor.execute("""
-        SELECT user_id,url,platform,timestamp FROM downloads ORDER BY timestamp DESC LIMIT ?
-        """,(limit,))
+        SELECT user_id, url, platform, timestamp FROM downloads ORDER BY timestamp DESC LIMIT ?
+        """, (limit,))
         return self.cursor.fetchall()
 
 # ================= ربات و وب =================
-db=Database()
-bot=telebot.TeleBot(TOKEN)
-app=Flask(__name__)
+db = Database()
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
 # ================= تابع بررسی عضویت با دکمه =================
 def force_join_markup():
@@ -259,61 +260,158 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= دانلود (رفع خطای ffmpeg) =================
-def download_video(url,chat_id,user_id,is_group=False):
+# ================= تابع دانلود با پشتیبانی کامل =================
+def download_video(url, chat_id, user_id, is_group=False):
     try:
-        platform=detect_platform(url)
-        # اصلاح: استفاده از فرمت آماده برای جلوگیری از نیاز به ffmpeg
-        ydl_opts={
-            "quiet":True,
-            "no_warnings":True,
-            "outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-            "format":"best[ext=mp4]/best"  # این خط باعث میشه نیازی به merge نباشه
+        platform = detect_platform(url)
+        is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
+
+        # تنظیمات پایه
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
+            "ignoreerrors": True,
         }
-        msg=bot.send_message(chat_id,f"⏳ در حال دانلود از {platform} ...")
+
+        # تشخیص و مدیریت خطاهای Pinterest
+        if platform == "Pinterest" or "pinterest" in url.lower():
+            bot.send_message(chat_id, "🖼️ در حال دریافت از Pinterest...")
+            ydl_opts.update({
+                "format": "best",
+                "extract_flat": False,
+                "force_generic_extractor": False,
+            })
+            # Pinterest گاهی نیاز به user-agent داره
+            ydl_opts["headers"] = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+
+        elif is_audio:
+            ydl_opts.update({
+                "format": "bestaudio/best",
+                "postprocessors": [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }],
+            })
+        else:
+            ydl_opts["format"] = "best[filesize<300M]/best"
+
+        msg = bot.send_message(chat_id, f"⏳ در حال دریافت از {platform} ...")
+
+        # مرحله 1: ابتدا اطلاعات رو بگیر (بدون دانلود)
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(url, download=False)
+
+                # اگر Pinterest بود و فرمت خاصی نداشت
+                if platform == "Pinterest" and info_dict:
+                    available_formats = info_dict.get('formats', [])
+                    if available_formats:
+                        # بهترین فرمت موجود رو انتخاب کن
+                        ydl_opts['format'] = available_formats[-1]['format_id']
+                        bot.edit_message_text(f"✅ فرمت مناسب پیدا شد", chat_id, msg.message_id)
+        except Exception as e:
+            bot.edit_message_text(f"⚠️ در حال تلاش مجدد...", chat_id, msg.message_id)
+            time.sleep(1)
+
+        # مرحله 2: دانلود نهایی
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info=ydl.extract_info(url,download=True)
+            info = ydl.extract_info(url, download=True)
+
         if not info:
-            bot.edit_message_text("❌ خطا در دریافت اطلاعات",chat_id,msg.message_id)
+            bot.edit_message_text("❌ خطا در دریافت اطلاعات", chat_id, msg.message_id)
             return
-        title=clean_filename(info.get("title","file"))
-        filename=None
+
+        title = clean_filename(info.get("title", "file"))
+
+        # پیدا کردن فایل
+        filename = None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
-                filename=os.path.join(DOWNLOAD_PATH,f)
+                filename = os.path.join(DOWNLOAD_PATH, f)
                 break
+
         if not filename or not os.path.exists(filename):
-            bot.edit_message_text("❌ فایل پیدا نشد",chat_id,msg.message_id)
+            # اگه پیدا نشد، آخرین فایل اضافه شده رو بگیر
+            files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+            if files:
+                filename = os.path.join(DOWNLOAD_PATH, files[-1])
+
+        if not filename or not os.path.exists(filename):
+            bot.edit_message_text("❌ فایل پیدا نشد", chat_id, msg.message_id)
             return
-        size=os.path.getsize(filename)
-        if size>MAX_FILE_SIZE:
+
+        size = os.path.getsize(filename)
+        if size > MAX_FILE_SIZE:
             os.remove(filename)
-            bot.edit_message_text("❌ حجم فایل بیشتر از ۳۰۰MB",chat_id,msg.message_id)
+            bot.edit_message_text("❌ حجم فایل بیشتر از ۳۰۰MB", chat_id, msg.message_id)
             return
-        bot.edit_message_text("📤 در حال آپلود ...",chat_id,msg.message_id)
-        with open(filename,"rb") as f:
-            if filename.endswith((".mp4",".mkv",".webm")):
-                bot.send_video(chat_id,f,caption=f"✅ {title}")
-                format_type="video"
+
+        bot.edit_message_text("📤 در حال آپلود ...", chat_id, msg.message_id)
+
+        with open(filename, "rb") as f:
+            if filename.endswith((".mp4", ".mkv", ".webm")):
+                bot.send_video(chat_id, f, caption=f"✅ {title}")
+                format_type = "video"
             elif filename.endswith(".mp3"):
-                bot.send_audio(chat_id,f,caption=f"✅ {title}")
-                format_type="audio"
+                bot.send_audio(chat_id, f, caption=f"✅ {title}")
+                format_type = "audio"
+            elif filename.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                bot.send_photo(chat_id, f, caption=f"✅ {title}")
+                format_type = "photo"
             else:
-                bot.send_document(chat_id,f,caption=f"✅ {title}")
-                format_type="file"
-        source="group" if is_group else "private"
-        db.add_download(user_id,chat_id,url,format_type,size,source,platform)
+                bot.send_document(chat_id, f, caption=f"✅ {title}")
+                format_type = "file"
+
+        source = "group" if is_group else "private"
+        db.add_download(user_id, chat_id, url, format_type, size, source, platform)
+
         os.remove(filename)
-        bot.delete_message(chat_id,msg.message_id)
+        bot.delete_message(chat_id, msg.message_id)
+
+    except yt_dlp.utils.DownloadError as e:
+        error_text = str(e)
+        if "Requested format is not available" in error_text:
+            bot.send_message(chat_id, "🔄 در حال تلاش با فرمت مناسب‌تر...")
+            # تلاش مجدد با تنظیمات ساده‌تر
+            try:
+                simple_opts = {
+                    "quiet": True,
+                    "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
+                    "format": "best",
+                }
+                with yt_dlp.YoutubeDL(simple_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    # ادامه پروسه دانلود...
+                    if info:
+                        title = clean_filename(info.get("title", "file"))
+                        filename = None
+                        for f in os.listdir(DOWNLOAD_PATH):
+                            if title in f:
+                                filename = os.path.join(DOWNLOAD_PATH, f)
+                                break
+                        if filename and os.path.exists(filename):
+                            size = os.path.getsize(filename)
+                            with open(filename, "rb") as f:
+                                bot.send_document(chat_id, f, caption=f"✅ {title}")
+                            db.add_download(user_id, chat_id, url, "file", size, source, platform)
+                            os.remove(filename)
+            except:
+                bot.send_message(chat_id, "❌ متأسفانه این پست Pinterest قابل دانلود نیست")
+        else:
+            bot.send_message(chat_id, f"❌ خطا در دانلود:\n{error_text[:200]}")
+
     except Exception as e:
-        bot.send_message(chat_id,f"❌ خطا:\n{str(e)[:200]}")
+        bot.send_message(chat_id, f"❌ خطا:\n{str(e)[:200]}")
 
 # ================= تلگرام =================
 @bot.message_handler(commands=['start'])
 def start(message):
-    db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    
-    # بررسی عضویت اجباری با دکمه
+    db.add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+
     if not db.check_membership(message.from_user.id):
         bot.reply_to(
             message,
@@ -325,11 +423,14 @@ def start(message):
 
     welcome_text = (
         f"🎬 سلام {message.from_user.first_name or message.from_user.username}!\n\n"
-        "من ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 هستم 🤖\n"
+        "من ربات **𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿** هستم 🤖\n"
         "می‌تونی منو به گروه خودت اضافه کنی یا مستقیم به من لینک بدی تا هر چیزی رو دانلود کنم!\n\n"
-        "✅ پشتیبانی از: یوتیوب، تیک‌تاک، اینستاگرام، توییتر، فیسبوک و سایر لینک‌ها\n"
-        "✅ می‌تونی هر چیزی که میخوای دانلود کنی: ویدیو، آهنگ، عکس، فایل‌ها و ...\n\n"
-        "📌 فقط کافیه لینک رو برای من بفرستی و من دانلود و برات ارسال می‌کنم."
+        "✅ **پشتیبانی از:**\n"
+        "• YouTube | TikTok | Instagram\n"
+        "• Twitter | Facebook | Pinterest\n"
+        "• و بیش از ۱۰۰۰ سایت دیگر\n\n"
+        "✅ **حجم مجاز:** ۳۰۰ مگابایت\n\n"
+        "📌 فقط کافیه لینک رو برای من بفرستی!"
     )
     bot.reply_to(message, welcome_text)
 
@@ -342,14 +443,15 @@ def check_join_callback(call):
             call.message.chat.id,
             call.message.message_id
         )
-        # ارسال پیام خوش‌آمدگویی
         welcome_text = (
             f"🎬 سلام {call.from_user.first_name or call.from_user.username}!\n\n"
-            "من ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 هستم 🤖\n"
+            "من ربات **𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿** هستم 🤖\n"
             "می‌تونی منو به گروه خودت اضافه کنی یا مستقیم به من لینک بدی تا هر چیزی رو دانلود کنم!\n\n"
-            "✅ پشتیبانی از: یوتیوب، تیک‌تاک، اینستاگرام، توییتر، فیسبوک و سایر لینک‌ها\n"
-            "✅ می‌تونی هر چیزی که میخوای دانلود کنی: ویدیو، آهنگ، عکس، فایل‌ها و ...\n\n"
-            "📌 فقط کافیه لینک رو برای من بفرستی و من دانلود و برات ارسال می‌کنم."
+            "✅ **پشتیبانی از:**\n"
+            "• YouTube | TikTok | Instagram\n"
+            "• Twitter | Facebook | Pinterest\n"
+            "• و بیش از ۱۰۰۰ سایت دیگر\n\n"
+            "📌 فقط کافیه لینک رو برای من بفرستی!"
         )
         bot.send_message(call.from_user.id, welcome_text)
     else:
@@ -357,54 +459,58 @@ def check_join_callback(call):
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    if message.from_user.id!=ADMIN_ID:
+    if message.from_user.id != ADMIN_ID:
         return
-    stats=db.get_stats()
-    users=db.get_users(10)
-    downloads=db.get_recent_downloads(10)
-    groups=db.get_groups(10)
-    markup=InlineKeyboardMarkup(row_width=2)
+    stats = db.get_stats()
+    users = db.get_users(10)
+    downloads = db.get_recent_downloads(10)
+    groups = db.get_groups(10)
+    markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🟢 روشن",callback_data="on"),
-        InlineKeyboardButton("🔴 خاموش",callback_data="off")
+        InlineKeyboardButton("🟢 روشن", callback_data="on"),
+        InlineKeyboardButton("🔴 خاموش", callback_data="off")
     )
-    text=f"👑 پنل مدیریت\n\nآمار:\nکل کاربران: {stats['total_users']}\nدانلودها: {stats['total_downloads']}\nگروه‌ها: {stats['total_groups']}\nفعال امروز: {stats['active_today']}\nبلاک شده: {stats['blocked']}\n\nآخرین کاربران:\n"
+    text = f"👑 **پنل مدیریت**\n\n"
+    text += f"📊 **آمار:**\n"
+    text += f"👥 کل کاربران: {stats['total_users']}\n"
+    text += f"📥 کل دانلودها: {stats['total_downloads']}\n"
+    text += f"👥 کل گروه‌ها: {stats['total_groups']}\n"
+    text += f"🟢 فعال امروز: {stats['active_today']}\n"
+    text += f"🔒 بلاک شده: {stats['blocked']}\n\n"
+    text += f"🟢 وضعیت: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n\n"
+    text += f"👥 **آخرین کاربران:**\n"
     for u in users:
-        text+=f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
-    text+="\nآخرین دانلودها:\n"
+        text += f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
+    text += f"\n📥 **آخرین دانلودها:**\n"
     for d in downloads:
-        text+=f"{d[0]} | {d[1]} | {d[2]} | {d[3][:16]}\n"
-    text+="\nآخرین گروه‌ها:\n"
-    for g in groups:
-        text+=f"{g[0]} | {g[1]} | {'فعال' if g[4] else 'غیرفعال'}\n"
-    bot.reply_to(message,text,reply_markup=markup)
+        text += f"{d[0]} | {d[2]} | {d[3][:16]}\n"
+    bot.reply_to(message, text, reply_markup=markup, parse_mode="Markdown")
 
-@bot.callback_query_handler(func=lambda call: call.data in ["on","off"])
+@bot.callback_query_handler(func=lambda call: call.data in ["on", "off"])
 def toggle_callback(call):
-    if call.from_user.id!=ADMIN_ID:
-        bot.answer_callback_query(call.id,"⛔ دسترسی ندارید")
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
         return
-    db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
-    bot.edit_message_text(f"✅ وضعیت ربات به {call.data.upper()} تغییر کرد",call.message.chat.id,call.message.message_id)
+    db.set_setting("bot_status", "ON" if call.data == "on" else "OFF")
+    bot.edit_message_text(f"✅ وضعیت ربات به {call.data.upper()} تغییر کرد", call.message.chat.id, call.message.message_id)
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
     # اگه پیام دستور نیست و لینک نداره، بیخیال
     if not message.text.startswith(('http://', 'https://')):
         return
-        
-    if db.get_setting("bot_status")=="OFF": 
+
+    if db.get_setting("bot_status") == "OFF":
         bot.reply_to(message, "⛔ ربات خاموش است")
         return
-    if db.is_blocked(message.from_user.id): 
+    if db.is_blocked(message.from_user.id):
         bot.reply_to(message, "⛔ شما بلاک هستید")
         return
 
-    db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    if message.chat.type in ["group","supergroup"]:
-        db.add_group(message.chat.id,message.chat.title)
+    db.add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
+    if message.chat.type in ["group", "supergroup"]:
+        db.add_group(message.chat.id, message.chat.title)
 
-    # بررسی عضویت اجباری با دکمه
     if not db.check_membership(message.from_user.id):
         bot.reply_to(
             message,
@@ -415,17 +521,18 @@ def handle_message(message):
         return
 
     urls = extract_urls(message.text)
-    if not urls: return
+    if not urls:
+        return
     url = urls[0]
-    bot.reply_to(message,"✅ لینک دریافت شد، شروع دانلود...")
+    bot.reply_to(message, "✅ لینک دریافت شد، شروع دانلود...")
     threading.Thread(
         target=download_video,
-        args=(url,message.chat.id,message.from_user.id,message.chat.type in ["group","supergroup"]),
+        args=(url, message.chat.id, message.from_user.id, message.chat.type in ["group", "supergroup"]),
         daemon=True
     ).start()
 
 # ================= وب پنل =================
-HTML_TEMPLATE="""<!DOCTYPE html>
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html dir="rtl">
 <head>
 <meta charset="utf-8">
@@ -471,11 +578,10 @@ th{background:#667eea;color:#fff;}
 
 <h2>آخرین دانلودها</h2>
 <table>
-<tr><th>UserID</th><th>لینک</th><th>پلتفرم</th><th>زمان</th></tr>
+<tr><th>UserID</th><th>پلتفرم</th><th>زمان</th></tr>
 {% for d in downloads %}
 <tr>
 <td>{{ d[0] }}</td>
-<td>{{ d[1][:50] }}...</td>
 <td>{{ d[2] }}</td>
 <td>{{ d[3][:16] }}</td>
 </tr>
@@ -508,8 +614,8 @@ def home():
 
 @app.route('/toggle/<status>')
 def toggle(status):
-    if status in ["on","off"]:
-        db.set_setting("bot_status","ON" if status=="on" else "OFF")
+    if status in ["on", "off"]:
+        db.set_setting("bot_status", "ON" if status == "on" else "OFF")
     return redirect('/')
 
 @app.route('/webhook', methods=['POST'])
@@ -521,7 +627,6 @@ def webhook():
 
 # ================= اجرا =================
 if __name__ == "__main__":
-    # تنظیم Webhook
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
