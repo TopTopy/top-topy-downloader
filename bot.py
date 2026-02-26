@@ -116,6 +116,22 @@ def resolve_short_url(url):
         print(f"خطا در تشخیص لینک کوتاه: {e}")
         return url
 
+# ================= بررسی وجود ویدیو در صفحه =================
+def check_page_content(url):
+    try:
+        response = requests.get(url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        })
+        if response.status_code == 200:
+            error_keywords = ["discontinued", "not available", "geo-blocked", "removed", "deleted", "private", "404", "not found"]
+            page_text = response.text.lower()
+            for keyword in error_keywords:
+                if keyword in page_text:
+                    return False, f"❌ این ویدیو در دسترس نیست (خطای {keyword})"
+        return True, None
+    except Exception as e:
+        return True, None
+
 # ================= دیتابیس =================
 class Database:
     def __init__(self):
@@ -325,7 +341,7 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود اختصاصی پینترست (نسخه فوق العاده) =================
+# ================= تابع دانلود اختصاصی پینترست (اصلاح شده نهایی) =================
 def download_pinterest(url, chat_id, user_id, is_group=False):
     try:
         bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
@@ -333,110 +349,16 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
         # تبدیل لینک کوتاه
         if "pin.it" in url:
             try:
-                session = requests.Session()
-                response = session.head(url, allow_redirects=True, timeout=10, headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.9",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "DNT": "1",
-                    "Connection": "keep-alive",
-                    "Upgrade-Insecure-Requests": "1",
+                response = requests.head(url, allow_redirects=True, timeout=10, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 })
                 url = response.url
                 bot.send_message(chat_id, f"🔗 لینک اصلی: `{url}`", parse_mode="Markdown")
             except:
                 pass
         
-        # روش 1: استخراج مستقیم از صفحه با Regex پیشرفته
+        # روش 1: استفاده از API جایگزین Pinterest
         try:
-            bot.send_message(chat_id, "🔄 **روش 1: استخراج مستقیم...**", parse_mode="Markdown")
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Cache-Control": "max-age=0",
-            }
-            
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                # الگوهای مختلف برای پیدا کردن عکس
-                patterns = [
-                    r'<meta property="og:image" content="([^"]+)"',
-                    r'<meta name="twitter:image" content="([^"]+)"',
-                    r'"image":"([^"]+)"',
-                    r'"image_original_url":"([^"]+)"',
-                    r'"image_url":"([^"]+)"',
-                    r'"imgUrl":"([^"]+)"',
-                    r'"image_src":"([^"]+)"',
-                    r'<img[^>]+src="([^"]+)"[^>]*>',
-                    r'data-test-id="pin-image"[^>]+src="([^"]+)"',
-                    r'class="[^"]*pin-image[^"]*"[^>]+src="([^"]+)"',
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, response.text, re.IGNORECASE)
-                    if matches:
-                        img_url = matches[0]
-                        if isinstance(img_url, tuple):
-                            img_url = img_url[0]
-                        
-                        # پاکسازی URL
-                        img_url = img_url.replace('\\u002F', '/').replace('\\/', '/')
-                        
-                        if img_url.startswith('//'):
-                            img_url = 'https:' + img_url
-                        elif img_url.startswith('/'):
-                            img_url = 'https://www.pinterest.com' + img_url
-                        
-                        # دانلود عکس
-                        img_response = requests.get(img_url, headers=headers, timeout=30, stream=True)
-                        if img_response.status_code == 200:
-                            # تشخیص فرمت
-                            content_type = img_response.headers.get('content-type', '')
-                            ext = 'jpg'
-                            if 'png' in content_type:
-                                ext = 'png'
-                            elif 'gif' in content_type:
-                                ext = 'gif'
-                            elif 'webp' in content_type:
-                                ext = 'webp'
-                            
-                            filename = f"{DOWNLOAD_PATH}/pinterest_{int(time.time())}.{ext}"
-                            
-                            with open(filename, "wb") as f:
-                                for chunk in img_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                            
-                            size = os.path.getsize(filename)
-                            if size <= MAX_FILE_SIZE:
-                                with open(filename, "rb") as f:
-                                    if ext == 'gif':
-                                        bot.send_document(chat_id, f, caption=f"✅ **عکس پینترست**")
-                                    else:
-                                        bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
-                                
-                                db.add_download(user_id, chat_id, url, "photo", size, 
-                                              "group" if is_group else "private", "Pinterest")
-                                os.remove(filename)
-                                return True
-        except Exception as e:
-            print(f"خطا در روش استخراج مستقیم: {e}")
-        
-        # روش 2: استفاده از API جایگزین Pinterest (نسخه جدید)
-        try:
-            bot.send_message(chat_id, "🔄 **روش 2: API جایگزین...**", parse_mode="Markdown")
-            
             # استخراج ID پین
             pin_id = None
             if "/pin/" in url:
@@ -445,17 +367,17 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                 pin_id = url.split("pin_id=")[-1].split("&")[0]
             
             if pin_id:
-                # API‌های مختلف
+                # API‌های مختلف برای دریافت اطلاعات پین
                 apis = [
-                    f"https://www.pinterest.com/resource/PinResource/get/?source_url=/pin/{pin_id}/",
-                    f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}",
-                    f"https://ar.savepin.io/pin/{pin_id}",
-                    f"https://pinterest-scraper.vercel.app/api/pin?id={pin_id}",
+                    f"https://www.pinterest.com/resource/PinResource/get/?source_url=/pin/{pin_id}/&data=<?xml version='1.0' encoding='UTF-8'?><Pin id='{pin_id}'></Pin>",
+                    f"https://api.pinterest.com/v1/pins/{pin_id}/?access_token=",
+                    f"https://ar.savepin.io/pin/{pin_id}"
                 ]
                 
                 headers = {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
                     "Accept": "application/json",
+                    "Accept-Language": "en-US,en;q=0.9",
                 }
                 
                 for api_url in apis:
@@ -464,30 +386,124 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                         if response.status_code == 200:
                             data = response.json()
                             
+                            # استخراج URL عکس از پاسخ‌های مختلف
                             img_url = None
                             
-                            # بررسی ساختارهای مختلف پاسخ
-                            if "resource_response" in data and "data" in data["resource_response"]:
-                                pin_data = data["resource_response"]["data"]
-                                if "images" in pin_data:
-                                    images = pin_data["images"]
-                                    if "orig" in images:
-                                        img_url = images["orig"]["url"]
-                                    elif "736x" in images:
-                                        img_url = images["736x"]["url"]
-                                    elif "600x" in images:
-                                        img_url = images["600x"]["url"]
-                            elif "data" in data and len(data["data"]) > 0:
-                                pin_data = data["data"][0]
-                                if "images" in pin_data:
-                                    img_url = pin_data["images"].get("orig", {}).get("url")
-                            elif "image" in data:
-                                img_url = data["image"]
+                            if "data" in data and "images" in data["data"]:
+                                images = data["data"]["images"]
+                                if "orig" in images:
+                                    img_url = images["orig"]["url"]
+                                elif "600x" in images:
+                                    img_url = images["600x"]["url"]
+                                elif "736x" in images:
+                                    img_url = images["736x"]["url"]
+                            elif "image_original_url" in str(data):
+                                import re
+                                match = re.search(r'"image_original_url":"([^"]+)"', response.text)
+                                if match:
+                                    img_url = match.group(1).replace('\\u002F', '/')
                             
                             if img_url:
+                                # دانلود عکس
                                 img_response = requests.get(img_url, headers=headers, timeout=30)
                                 if img_response.status_code == 200:
-                                    filename = f"{DOWNLOAD_PATH}/pinterest_api_{int(time.time())}.jpg"
+                                    filename = f"{DOWNLOAD_PATH}/pinterest_{pin_id}.jpg"
+                                    with open(filename, "wb") as f:
+                                        f.write(img_response.content)
+                                    
+                                    size = os.path.getsize(filename)
+                                    if size <= MAX_FILE_SIZE:
+                                        with open(filename, "rb") as f:
+                                            bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                                        
+                                        db.add_download(user_id, chat_id, url, "photo", size, 
+                                                      "group" if is_group else "private", "Pinterest")
+                                        os.remove(filename)
+                                        return True
+                    except:
+                        continue
+        except Exception as e:
+            print(f"خطا در روش API پینترست: {e}")
+        
+        # روش 2: استفاده از yt-dlp برای پینترست
+        try:
+            bot.send_message(chat_id, "🔄 **روش جایگزین: yt-dlp...**", parse_mode="Markdown")
+            
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_%(title)s.%(ext)s",
+                "ignoreerrors": True,
+                "format": "best",
+                "extract_flat": False,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                if info:
+                    # پیدا کردن فایل دانلود شده
+                    filename = None
+                    for f in os.listdir(DOWNLOAD_PATH):
+                        if "pinterest" in f or info.get("id", "") in f:
+                            filename = os.path.join(DOWNLOAD_PATH, f)
+                            break
+                    
+                    if not filename:
+                        files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+                        if files:
+                            filename = os.path.join(DOWNLOAD_PATH, files[-1])
+                    
+                    if filename and os.path.exists(filename):
+                        size = os.path.getsize(filename)
+                        
+                        with open(filename, "rb") as f:
+                            if filename.endswith((".jpg", ".jpeg", ".png")):
+                                bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                            elif filename.endswith((".mp4", ".webm")):
+                                bot.send_video(chat_id, f, caption=f"✅ **ویدیو پینترست**")
+                            else:
+                                bot.send_document(chat_id, f, caption=f"✅ **محتوای پینترست**")
+                        
+                        db.add_download(user_id, chat_id, url, "media", size, 
+                                      "group" if is_group else "private", "Pinterest")
+                        os.remove(filename)
+                        return True
+        except Exception as e:
+            print(f"خطا در روش yt-dlp پینترست: {e}")
+        
+        # روش 3: استفاده از سرویس‌های第三方
+        try:
+            bot.send_message(chat_id, "🔄 **روش جایگزین: سرویس第三方...**", parse_mode="Markdown")
+            
+            # سرویس‌های دانلود پینترست
+            download_services = [
+                f"https://pinterestdownloader.com/download?url={url}",
+                f"https://www.expertstool.com/pinterest-image-downloader/?url={url}",
+                f"https://pinterest.online-downloader.com/download?url={url}"
+            ]
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            
+            for service_url in download_services:
+                try:
+                    response = requests.get(service_url, headers=headers, timeout=15)
+                    if response.status_code == 200:
+                        # استخراج لینک دانلود از صفحه
+                        import re
+                        download_links = re.findall(r'https?://[^\s"\']+\.(jpg|jpeg|png|gif|mp4)', response.text)
+                        
+                        for link in download_links:
+                            if link.startswith("http"):
+                                img_response = requests.get(link, headers=headers, timeout=30)
+                                if img_response.status_code == 200:
+                                    filename = f"{DOWNLOAD_PATH}/pinterest_service_{int(time.time())}.jpg"
                                     with open(filename, "wb") as f:
                                         f.write(img_response.content)
                                     
@@ -498,32 +514,24 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                                                   "group" if is_group else "private", "Pinterest")
                                     os.remove(filename)
                                     return True
-                    except:
-                        continue
+                except:
+                    continue
         except Exception as e:
-            print(f"خطا در روش API: {e}")
+            print(f"خطا در روش سرویس第三方: {e}")
         
-        # روش 3: استفاده از yt-dlp با تنظیمات مخصوص
+        # روش 4: تلاش با yt-dlp و تنظیمات عمومی
         try:
-            bot.send_message(chat_id, "🔄 **روش 3: yt-dlp پیشرفته...**", parse_mode="Markdown")
+            bot.send_message(chat_id, "🔄 **روش نهایی: تلاش عمومی...**", parse_mode="Markdown")
             
             ydl_opts = {
                 "quiet": True,
                 "no_warnings": True,
-                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_%(title)s.%(ext)s",
+                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_general_%(title)s.%(ext)s",
                 "ignoreerrors": True,
                 "format": "best",
-                "extract_flat": False,
-                "force_generic_extractor": False,
+                "force_generic_extractor": True,
                 "http_headers": {
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                },
-                "extractor_args": {
-                    "pinterest": {
-                        "embed": True,
-                        "download_all": True,
-                    }
                 }
             }
             
@@ -550,109 +558,16 @@ def download_pinterest(url, chat_id, user_id, is_group=False):
                         os.remove(filename)
                         return True
         except Exception as e:
-            print(f"خطا در روش yt-dlp: {e}")
+            print(f"خطا در روش عمومی: {e}")
         
-        # روش 4: استفاده از سرویس‌های دانلود آنلاین
-        try:
-            bot.send_message(chat_id, "🔄 **روش 4: سرویس آنلاین...**", parse_mode="Markdown")
-            
-            # سرویس‌های مختلف
-            services = [
-                f"https://savepin.app/download?url={url}&type=redirect",
-                f"https://pinterestvideodownloader.com/download?url={url}",
-                f"https://www.expertstool.com/pinterest-image-downloader/?url={url}",
-            ]
-            
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            }
-            
-            for service_url in services:
-                try:
-                    response = requests.get(service_url, headers=headers, timeout=15, allow_redirects=True)
-                    if response.status_code == 200:
-                        # استخراج لینک دانلود
-                        download_links = re.findall(r'https?://[^\s"\']+\.(jpg|jpeg|png|gif|mp4|webm)', response.text)
-                        
-                        for link in download_links:
-                            if link.startswith("http"):
-                                file_response = requests.get(link, headers=headers, timeout=30, stream=True)
-                                if file_response.status_code == 200:
-                                    ext = link.split('.')[-1].split('?')[0]
-                                    filename = f"{DOWNLOAD_PATH}/pinterest_service_{int(time.time())}.{ext}"
-                                    
-                                    with open(filename, "wb") as f:
-                                        for chunk in file_response.iter_content(chunk_size=8192):
-                                            if chunk:
-                                                f.write(chunk)
-                                    
-                                    with open(filename, "rb") as f:
-                                        if ext in ['jpg', 'jpeg', 'png']:
-                                            bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
-                                        elif ext == 'gif':
-                                            bot.send_document(chat_id, f, caption=f"✅ **GIF پینترست**")
-                                        else:
-                                            bot.send_video(chat_id, f, caption=f"✅ **ویدیو پینترست**")
-                                    
-                                    db.add_download(user_id, chat_id, url, "media", os.path.getsize(filename), 
-                                                  "group" if is_group else "private", "Pinterest")
-                                    os.remove(filename)
-                                    return True
-                except:
-                    continue
-        except Exception as e:
-            print(f"خطا در روش سرویس آنلاین: {e}")
-        
-        # روش 5: تلاش با روش عمومی yt-dlp
-        try:
-            bot.send_message(chat_id, "🔄 **روش 5: تلاش نهایی...**", parse_mode="Markdown")
-            
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_final_%(title)s.%(ext)s",
-                "ignoreerrors": True,
-                "format": "best",
-                "force_generic_extractor": True,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                if info:
-                    files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
-                    if files:
-                        filename = os.path.join(DOWNLOAD_PATH, files[-1])
-                        
-                        with open(filename, "rb") as f:
-                            bot.send_document(chat_id, f, caption=f"✅ **محتوای پینترست**")
-                        
-                        size = os.path.getsize(filename)
-                        db.add_download(user_id, chat_id, url, "media", size, 
-                                      "group" if is_group else "private", "Pinterest")
-                        os.remove(filename)
-                        return True
-        except:
-            pass
-        
-        # اگر هیچ روشی جواب نداد، لینک جایگزین پیشنهاد بده
+        # اگر هیچ روشی جواب نداد
         bot.send_message(chat_id, 
-            "❌ **پینترست از دانلود مستقیم جلوگیری می‌کند**\n\n"
-            "💡 **راه‌حل‌های جایگزین:**\n\n"
-            "1️⃣ **روش اول:**\n"
+            "❌ **متأسفانه پینترست محدودیت دارد**\n\n"
+            "💡 **راه‌حل:**\n"
             "• لینک را در مرورگر باز کنید\n"
             "• روی عکس راست کلیک کنید\n"
-            "• گزینه 'Save image as...' را انتخاب کنید\n"
-            "• فایل ذخیره شده را به ربات بفرستید\n\n"
-            "2️⃣ **روش دوم (سایت جایگزین):**\n"
-            "• به سایت https://savepin.app بروید\n"
-            "• لینک پینترست را جایگذاری کنید\n"
-            "• دکمه Download را بزنید\n"
-            "• فایل دانلود شده را به ربات بفرستید\n\n"
-            "3️⃣ **روش سوم (ربات دیگر):**\n"
-            "• از ربات @SavePinBot استفاده کنید\n"
-            "• لینک را برای اون بفرستید\n"
-            "• فایل را از اون بگیرید و به من بفرستید",
+            "• گزینه 'ذخیره تصویر' را انتخاب کنید\n"
+            "• فایل را به ربات بفرستید",
             parse_mode="Markdown")
         
         return False
