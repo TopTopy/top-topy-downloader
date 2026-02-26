@@ -4,12 +4,11 @@ import threading
 import time
 import re
 from datetime import datetime
-from flask import Flask, request, redirect, render_template_string
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 import sqlite3
-import requests  # اضافه شد برای تشخیص لینک‌های کوتاه
+import requests
 from urllib.parse import urlparse, urljoin
 
 # ================= تنظیمات =================
@@ -46,28 +45,20 @@ def detect_platform(url):
         return "Twitter"
     if "facebook" in url or "fb.com" in url:
         return "Facebook"
-    if "pinterest" in url or "pin.it" in url:  # اضافه شد pin.it
+    if "pinterest" in url or "pin.it" in url:
         return "Pinterest"
     return "Other"
 
 # ================= تابع تشخیص و دنبال کردن لینک‌های کوتاه =================
 def resolve_short_url(url):
-    """لینک‌های کوتاه شده (مثل pin.it) رو به آدرس اصلی تبدیل می‌کنه"""
     try:
-        # سایت‌هایی که لینک کوتاه دارند
         short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be']
-        
-        # بررسی میکنیم ببینیم لینک کوتاه هست یا نه
         parsed = urlparse(url)
         if any(domain in parsed.netloc for domain in short_domains):
-            # با allow_redirects=False فقط هدر رو می‌گیریم تا ببینیم ریدایرکت داره یا نه
             response = requests.head(url, allow_redirects=False, timeout=10)
-            
-            # اگه status_code 3xx بود یعنی ریدایرکت شده
             if 300 <= response.status_code < 400:
                 redirect_url = response.headers.get('Location')
                 if redirect_url:
-                    # اگه آدرس نسبی بود، به آدرس مطلق تبدیلش کن
                     if not redirect_url.startswith('http'):
                         redirect_url = urljoin(url, redirect_url)
                     return redirect_url
@@ -135,7 +126,6 @@ class Database:
         ]
         for k, v in defaults:
             self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
-        # ادمین اصلی
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)", (ADMIN_ID,))
         self.conn.commit()
 
@@ -275,10 +265,9 @@ class Database:
         """, (limit,))
         return self.cursor.fetchall()
 
-# ================= ربات و وب =================
+# ================= ربات =================
 db = Database()
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
 
 # ================= تابع بررسی عضویت با دکمه =================
 def force_join_markup():
@@ -288,21 +277,18 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود با پشتیبانی کامل از Pinterest و لینک‌های کوتاه =================
+# ================= تابع دانلود =================
 def download_video(url, chat_id, user_id, is_group=False):
     try:
-        # ====== تشخیص لینک کوتاه ======
         original_url = url
         resolved_url = resolve_short_url(url)
-        
         if resolved_url != original_url:
             bot.send_message(chat_id, f"🔗 **لینک کوتاه تشخیص داده شد.**\nدر حال هدایت به آدرس اصلی...", parse_mode="Markdown")
             url = resolved_url
-        
+
         platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
 
-        # تنظیمات پایه
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -310,39 +296,24 @@ def download_video(url, chat_id, user_id, is_group=False):
             "ignoreerrors": True,
         }
 
-        # ========== پشتیبانی ویژه از Pinterest ==========
         if platform == "Pinterest" or "pinterest" in url.lower():
             bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
-            
-            # تنظیمات مخصوص Pinterest
             ydl_opts.update({
                 "format": "best",
                 "extract_flat": False,
                 "force_generic_extractor": True,
                 "socket_timeout": 30,
                 "retries": 3,
-            })
-            
-            # هدرهای شبیه مرورگر واقعی
-            ydl_opts["headers"] = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.5",
-                "Referer": "https://www.pinterest.com/",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            }
-            
-            # extractor args مخصوص Pinterest
-            ydl_opts["extractor_args"] = {
-                "pinterest": {
-                    "skip": ["comments"],
-                    "download": "all"
+                "headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                    "Accept-Language": "en-US,en;q=0.5",
+                    "Referer": "https://www.pinterest.com/",
+                },
+                "extractor_args": {
+                    "pinterest": {"skip": ["comments"], "download": "all"}
                 }
-            }
-
-        # ========== تنظیمات برای صوتی ==========
+            })
         elif is_audio:
             ydl_opts.update({
                 "format": "bestaudio/best",
@@ -352,41 +323,25 @@ def download_video(url, chat_id, user_id, is_group=False):
                     "preferredquality": "192",
                 }],
             })
-            
-        # ========== تنظیمات برای ویدیو ==========
         else:
             ydl_opts["format"] = "best[filesize<300M]/best"
 
         msg = bot.send_message(chat_id, f"⏳ **در حال دریافت از {platform} ...**", parse_mode="Markdown")
 
-        # ========== مرحله 1: دریافت اطلاعات ==========
         info = None
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # اول بدون دانلود اطلاعات رو بگیر
                 info_dict = ydl.extract_info(url, download=False)
-                
-                # اگه Pinterest بود و فرمت خاصی داشت
                 if platform == "Pinterest" and info_dict:
-                    # بررسی انواع فرمت‌های موجود
                     if info_dict.get('entries'):
-                        # اگه آلبوم عکس باشه
                         bot.edit_message_text(f"📸 **آلبوم عکس پیدا شد...**", chat_id, msg.message_id, parse_mode="Markdown")
                     elif info_dict.get('formats'):
-                        # بهترین فرمت موجود رو انتخاب کن
                         formats = info_dict.get('formats', [])
                         if formats:
-                            best_format = formats[-1]  # آخرین فرمت معمولا بهترینه
-                            ydl_opts['format'] = best_format['format_id']
+                            ydl_opts['format'] = formats[-1]['format_id']
                             bot.edit_message_text(f"✅ **فرمت مناسب پیدا شد**", chat_id, msg.message_id, parse_mode="Markdown")
-                
-                # حالا دانلود کن
                 info = ydl.extract_info(url, download=True)
-                
-        except Exception as e:
-            bot.edit_message_text(f"⚠️ **تلاش با روش جایگزین...**", chat_id, msg.message_id, parse_mode="Markdown")
-            
-            # روش جایگزین برای Pinterest
+        except:
             if platform == "Pinterest":
                 try:
                     fallback_opts = {
@@ -404,21 +359,16 @@ def download_video(url, chat_id, user_id, is_group=False):
             bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # ========== دریافت عنوان فایل ==========
         title = clean_filename(info.get("title", "file"))
-        
-        # اگه عنوان خالی بود، از آدرس استفاده کن
         if not title or title == "file":
             title = clean_filename(url.split('/')[-1][:50])
 
-        # ========== پیدا کردن فایل ==========
         filename = None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
                 filename = os.path.join(DOWNLOAD_PATH, f)
                 break
 
-        # اگه پیدا نشد، آخرین فایل اضافه شده رو بگیر
         if not filename or not os.path.exists(filename):
             files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
             if files:
@@ -428,14 +378,12 @@ def download_video(url, chat_id, user_id, is_group=False):
             bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # ========== بررسی حجم ==========
         size = os.path.getsize(filename)
         if size > MAX_FILE_SIZE:
             os.remove(filename)
             bot.edit_message_text("❌ **حجم فایل بیشتر از ۳۰۰MB**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # ========== آپلود فایل ==========
         bot.edit_message_text("📤 **در حال آپلود ...**", chat_id, msg.message_id, parse_mode="Markdown")
 
         with open(filename, "rb") as f:
@@ -452,20 +400,186 @@ def download_video(url, chat_id, user_id, is_group=False):
                 bot.send_document(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "file"
 
-        # ========== ذخیره آمار ==========
         source = "group" if is_group else "private"
         db.add_download(user_id, chat_id, url, format_type, size, source, platform)
-
-        # پاک کردن فایل
         os.remove(filename)
         bot.delete_message(chat_id, msg.message_id)
 
-    except yt_dlp.utils.DownloadError as e:
-        error_text = str(e)
-        bot.send_message(chat_id, f"❌ **خطای Pinterest:**\n`{error_text[:200]}`", parse_mode="Markdown")
-
     except Exception as e:
         bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+
+# ================= پنل ادمین کامل =================
+def admin_panel_main(message):
+    stats = db.get_stats()
+    text = f"👑 **پنل مدیریت اصلی**\n\n"
+    text += f"📊 **آمار کلی:**\n"
+    text += f"👥 کاربران: {stats['total_users']}\n"
+    text += f"📥 دانلودها: {stats['total_downloads']}\n"
+    text += f"👥 گروه‌ها: {stats['total_groups']}\n"
+    text += f"🟢 فعال امروز: {stats['active_today']}\n"
+    text += f"🔒 بلاک شده: {stats['blocked']}\n"
+    text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n"
+    
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("🟢 روشن/خاموش", callback_data="admin_toggle"),
+        InlineKeyboardButton("📊 آمار کامل", callback_data="admin_stats"),
+        InlineKeyboardButton("👥 لیست کاربران", callback_data="admin_users"),
+        InlineKeyboardButton("📥 دانلودها", callback_data="admin_downloads"),
+        InlineKeyboardButton("👥 گروه‌ها", callback_data="admin_groups"),
+        InlineKeyboardButton("🔒 بلاک کاربر", callback_data="admin_block"),
+        InlineKeyboardButton("🔓 آنبلاک کاربر", callback_data="admin_unblock"),
+        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
+        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset"),
+        InlineKeyboardButton("❌ بستن", callback_data="admin_close")
+    )
+    return text, markup
+
+@bot.message_handler(commands=['admin'])
+def admin_command(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    text, markup = admin_panel_main(message)
+    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
+def admin_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
+        return
+
+    action = call.data.replace('admin_', '')
+
+    if action == "toggle":
+        current = db.get_setting("bot_status")
+        new = "OFF" if current == "ON" else "ON"
+        db.set_setting("bot_status", new)
+        bot.answer_callback_query(call.id, f"✅ وضعیت به {new} تغییر کرد")
+        text, markup = admin_panel_main(call.message)
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "stats":
+        stats = db.get_stats()
+        text = f"📊 **آمار کامل**\n\n"
+        text += f"👥 کل کاربران: {stats['total_users']}\n"
+        text += f"📥 کل دانلودها: {stats['total_downloads']}\n"
+        text += f"👥 کل گروه‌ها: {stats['total_groups']}\n"
+        text += f"🟢 کاربران فعال امروز: {stats['active_today']}\n"
+        text += f"👥 گروه‌های فعال امروز: {stats['active_groups']}\n"
+        text += f"🔒 کاربران بلاک شده: {stats['blocked']}\n"
+        text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n"
+        text += f"👤 حالت گروه: {'فعال' if stats['group_mode'] == 'ON' else 'غیرفعال'}\n"
+        text += f"👤 حالت خصوصی: {'فعال' if stats['private_mode'] == 'ON' else 'غیرفعال'}"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "users":
+        users = db.get_users(20)
+        text = "👥 **۲۰ کاربر آخر:**\n\n"
+        for u in users:
+            status = "🔒" if u[4] else "✅"
+            name = u[2] or u[1] or 'ناشناس'
+            text += f"{status} `{u[0]}` | {name} | دانلود: {u[3]}\n"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "downloads":
+        downloads = db.get_recent_downloads(20)
+        text = "📥 **۲۰ دانلود آخر:**\n\n"
+        for d in downloads:
+            text += f"👤 `{d[0]}` | {d[2]} | {d[3][:16]}\n"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "groups":
+        groups = db.get_groups(20)
+        text = "👥 **۲۰ گروه آخر:**\n\n"
+        for g in groups:
+            status = "✅" if g[4] else "❌"
+            text += f"{status} `{g[0]}` | {g[1][:30]} | {g[3][:16]}\n"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "block":
+        bot.edit_message_text("🔒 **آیدی عددی کاربر مورد نظر برای بلاک را بفرستید:**", 
+                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, block_user_handler)
+
+    elif action == "unblock":
+        bot.edit_message_text("🔓 **آیدی عددی کاربر مورد نظر برای آنبلاک را بفرستید:**", 
+                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, unblock_user_handler)
+
+    elif action == "broadcast":
+        bot.edit_message_text("📢 **متن پیام همگانی را بفرستید:**", 
+                            call.message.chat.id, call.message.message_id, parse_mode="Markdown")
+        bot.register_next_step_handler(call.message, broadcast_handler)
+
+    elif action == "reset":
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("✅ بله، ریست کن", callback_data="admin_reset_confirm"),
+            InlineKeyboardButton("❌ خیر، منصرف شدم", callback_data="admin_back")
+        )
+        bot.edit_message_text("⚠️ **آیا از ریست آمار اطمینان دارید؟**\nاین عمل غیرقابل بازگشت است!", 
+                            call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "reset_confirm":
+        db.cursor.execute("DELETE FROM downloads")
+        db.cursor.execute("UPDATE settings SET value='0' WHERE key IN ('total_downloads', 'total_users', 'total_groups')")
+        db.conn.commit()
+        bot.answer_callback_query(call.id, "✅ آمار با موفقیت ریست شد")
+        text, markup = admin_panel_main(call.message)
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "back":
+        text, markup = admin_panel_main(call.message)
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
+    elif action == "close":
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+
+def block_user_handler(message):
+    try:
+        user_id = int(message.text.strip())
+        db.block_user(user_id)
+        bot.reply_to(message, f"✅ کاربر `{user_id}` با موفقیت بلاک شد.", parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "❌ خطا: لطفاً یک آیدی عددی معتبر بفرستید.")
+
+def unblock_user_handler(message):
+    try:
+        user_id = int(message.text.strip())
+        db.unblock_user(user_id)
+        bot.reply_to(message, f"✅ کاربر `{user_id}` با موفقیت آنبلاک شد.", parse_mode="Markdown")
+    except:
+        bot.reply_to(message, "❌ خطا: لطفاً یک آیدی عددی معتبر بفرستید.")
+
+def broadcast_handler(message):
+    msg_text = message.text
+    users = db.get_users(1000)
+    
+    status_msg = bot.reply_to(message, "📤 **در حال ارسال پیام همگانی...**", parse_mode="Markdown")
+    
+    sent = 0
+    failed = 0
+    
+    for user in users:
+        if not user[4]:
+            try:
+                bot.send_message(user[0], f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
+                sent += 1
+            except:
+                failed += 1
+            time.sleep(0.05)
+    
+    bot.edit_message_text(f"✅ **نتیجه ارسال همگانی**\n\n📤 ارسال شده: {sent}\n❌ ناموفق: {failed}", 
+                        status_msg.chat.id, status_msg.message_id, parse_mode="Markdown")
 
 # ================= تلگرام =================
 @bot.message_handler(commands=['start'])
@@ -521,46 +635,8 @@ def check_join_callback(call):
     else:
         bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
 
-@bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    stats = db.get_stats()
-    users = db.get_users(10)
-    downloads = db.get_recent_downloads(10)
-    groups = db.get_groups(10)
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton("🟢 روشن", callback_data="on"),
-        InlineKeyboardButton("🔴 خاموش", callback_data="off")
-    )
-    text = f"👑 **پنل مدیریت**\n\n"
-    text += f"📊 **آمار:**\n"
-    text += f"👥 کل کاربران: {stats['total_users']}\n"
-    text += f"📥 کل دانلودها: {stats['total_downloads']}\n"
-    text += f"👥 کل گروه‌ها: {stats['total_groups']}\n"
-    text += f"🟢 فعال امروز: {stats['active_today']}\n"
-    text += f"🔒 بلاک شده: {stats['blocked']}\n\n"
-    text += f"🟢 وضعیت: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n\n"
-    text += f"👥 **آخرین کاربران:**\n"
-    for u in users:
-        text += f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
-    text += f"\n📥 **آخرین دانلودها:**\n"
-    for d in downloads:
-        text += f"{d[0]} | {d[2]} | {d[3][:16]}\n"
-    bot.reply_to(message, text, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data in ["on", "off"])
-def toggle_callback(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
-        return
-    db.set_setting("bot_status", "ON" if call.data == "on" else "OFF")
-    bot.edit_message_text(f"✅ وضعیت ربات به {call.data.upper()} تغییر کرد", call.message.chat.id, call.message.message_id)
-
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
-    # اگه پیام دستور نیست و لینک نداره، بیخیال
     if not message.text.startswith(('http://', 'https://')):
         return
 
@@ -595,92 +671,9 @@ def handle_message(message):
         daemon=True
     ).start()
 
-# ================= وب پنل =================
-HTML_TEMPLATE = """<!DOCTYPE html>
-<html dir="rtl">
-<head>
-<meta charset="utf-8">
-<title>پنل مدیریت ربات</title>
-<style>
-body{font-family:tahoma;background:#f5f6fa;padding:20px;}
-h1{text-align:center;color:#333;}
-.stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:20px;margin-bottom:20px;}
-.stat-card{background:#fff;padding:20px;border-radius:10px;text-align:center;box-shadow:0 0 10px #ccc;}
-.stat-value{font-size:28px;color:#667eea;font-weight:bold;}
-.btn{padding:10px 20px;border-radius:5px;text-decoration:none;margin:5px;color:#fff;}
-.btn-success{background:#4caf50;} .btn-danger{background:#f44336;}
-table{width:100%;border-collapse:collapse;margin-top:20px;}
-th,td{border:1px solid #ddd;padding:8px;text-align:center;}
-th{background:#667eea;color:#fff;}
-</style>
-</head>
-<body>
-<h1>🤖 پنل مدیریت ربات</h1>
-<div class="stats-grid">
-<div class="stat-card"><div>👥 کاربران کل</div><div class="stat-value">{{ stats.total_users }}</div></div>
-<div class="stat-card"><div>📥 دانلود کل</div><div class="stat-value">{{ stats.total_downloads }}</div></div>
-<div class="stat-card"><div>🟢 فعال امروز</div><div class="stat-value">{{ stats.active_today }}</div></div>
-<div class="stat-card"><div>🔒 بلاک شده</div><div class="stat-value">{{ stats.blocked }}</div></div>
-</div>
-<div style="text-align:center;">
-<a href="/toggle/on" class="btn btn-success">🟢 روشن</a>
-<a href="/toggle/off" class="btn btn-danger">🔴 خاموش</a>
-</div>
-
-<h2>آخرین کاربران</h2>
-<table>
-<tr><th>ID</th><th>نام</th><th>دانلودها</th><th>وضعیت</th></tr>
-{% for u in users %}
-<tr>
-<td>{{ u[0] }}</td>
-<td>{{ u[2] or u[1] }}</td>
-<td>{{ u[3] }}</td>
-<td>{{ '🔒' if u[4] else '✅' }}</td>
-</tr>
-{% endfor %}
-</table>
-
-<h2>آخرین دانلودها</h2>
-<table>
-<tr><th>UserID</th><th>پلتفرم</th><th>زمان</th></tr>
-{% for d in downloads %}
-<tr>
-<td>{{ d[0] }}</td>
-<td>{{ d[2] }}</td>
-<td>{{ d[3][:16] }}</td>
-</tr>
-{% endfor %}
-</table>
-
-<h2>آخرین گروه‌ها</h2>
-<table>
-<tr><th>ID</th><th>نام گروه</th><th>وضعیت</th></tr>
-{% for g in groups %}
-<tr>
-<td>{{ g[0] }}</td>
-<td>{{ g[1] }}</td>
-<td>{{ 'فعال' if g[4] else 'غیرفعال' }}</td>
-</tr>
-{% endfor %}
-</table>
-
-</body>
-</html>
-"""
-
-@app.route('/')
-def home():
-    stats = db.get_stats()
-    users = db.get_users(20)
-    downloads = db.get_recent_downloads(20)
-    groups = db.get_groups(20)
-    return render_template_string(HTML_TEMPLATE, stats=stats, users=users, downloads=downloads, groups=groups)
-
-@app.route('/toggle/<status>')
-def toggle(status):
-    if status in ["on", "off"]:
-        db.set_setting("bot_status", "ON" if status == "on" else "OFF")
-    return redirect('/')
+# ================= وب‌هوک =================
+from flask import Flask, request
+app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -696,5 +689,5 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     print(f"🌐 Webhook: {WEBHOOK_URL}")
-    print(f"✅ پشتیبانی از Pinterest و لینک‌های کوتاه فعال شد")
+    print("✅ پنل ادمین در خود ربات فعال شد")
     app.run(host="0.0.0.0", port=PORT)
