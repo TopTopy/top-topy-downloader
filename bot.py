@@ -70,12 +70,6 @@ def detect_platform(url):
         return "SoundCloud"
     if "spotify" in url:
         return "Spotify"
-    if "aparat" in url:
-        return "Aparat"
-    if "namasha" in url:
-        return "Namasha"
-    if "telewebion" in url:
-        return "Telewebion"
     return "Other"
 
 def resolve_short_url(url):
@@ -297,186 +291,58 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-def download_tiktok(url, chat_id, user_id, is_group=False):
+def download_general(url, chat_id, user_id, is_group=False):
     try:
-        bot.send_message(chat_id, "🎵 در حال دریافت از تیک‌تاک...")
-        try:
-            api_url = "https://tikwm.com/api/"
-            data = {"url": url, "hd": 1}
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.post(api_url, data=data, headers=headers, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("data"):
-                    download_url = result["data"].get("play") or result["data"].get("hdplay")
-                    if download_url:
-                        file_response = requests.get(download_url, timeout=60)
-                        if file_response.status_code == 200:
-                            filename = f"{DOWNLOAD_PATH}/tiktok_{int(time.time())}.mp4"
-                            with open(filename, "wb") as f:
-                                f.write(file_response.content)
-                            with open(filename, "rb") as f:
-                                bot.send_video(chat_id, f, caption="✅ دانلود از تیک‌تاک")
-                            db.add_download(user_id, chat_id, url, "video", len(file_response.content), 
-                                          "group" if is_group else "private", "TikTok")
-                            os.remove(filename)
-                            return True
-        except:
-            pass
-        bot.send_message(chat_id, "❌ خطا در دانلود از تیک‌تاک")
-        return False
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا: {str(e)[:200]}")
-        return False
-
-def download_instagram(url, chat_id, user_id, is_group=False):
-    try:
-        bot.send_message(chat_id, "📸 در حال دریافت از اینستاگرام...")
+        bot.send_message(chat_id, "🌐 در حال دریافت از سایت...")
+        msg = bot.send_message(chat_id, "⏳ در حال دریافت اطلاعات...")
+        
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-            "format": "best",
-            "force_generic_extractor": True,
+            "ignoreerrors": True,
+            "format": "best[filesize<300M]/best",
+            "socket_timeout": 30,
+            "retries": 5,
+            "http_headers": {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
+            }
         }
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             if info:
-                title = clean_filename(info.get("title", "instagram_video"))
+                title = clean_filename(info.get("title", "file"))
+                filename = None
                 for f in os.listdir(DOWNLOAD_PATH):
                     if title in f:
                         filename = os.path.join(DOWNLOAD_PATH, f)
-                        with open(filename, "rb") as file:
-                            bot.send_video(chat_id, file, caption=f"✅ {title}")
-                        size = os.path.getsize(filename)
-                        db.add_download(user_id, chat_id, url, "video", size, 
-                                      "group" if is_group else "private", "Instagram")
-                        os.remove(filename)
-                        return True
-        return False
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا: {str(e)[:200]}")
-        return False
-
-def download_pinterest(url, chat_id, user_id, is_group=False):
-    try:
-        bot.send_message(chat_id, "🖼️ در حال دریافت از Pinterest...")
-        if "pin.it" in url:
-            response = requests.head(url, allow_redirects=True)
-            url = response.url
-        pin_id = None
-        if "/pin/" in url:
-            pin_id = url.split("/pin/")[-1].split("/")[0].split("?")[0]
-        if pin_id:
-            api_url = f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(api_url, headers=headers)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data") and len(data["data"]) > 0:
-                    pin_data = data["data"][0]
-                    if pin_data.get("images"):
-                        img_url = pin_data["images"].get("orig", {}).get("url")
-                        if img_url:
-                            img_response = requests.get(img_url, headers=headers)
-                            if img_response.status_code == 200:
-                                filename = f"{DOWNLOAD_PATH}/pinterest_{pin_id}.jpg"
-                                with open(filename, "wb") as f:
-                                    f.write(img_response.content)
-                                with open(filename, "rb") as f:
-                                    bot.send_photo(chat_id, f, caption="✅ عکس پینترست")
-                                db.add_download(user_id, chat_id, url, "photo", len(img_response.content), 
-                                              "group" if is_group else "private", "Pinterest")
-                                os.remove(filename)
-                                return True
-        return False
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا: {str(e)[:200]}")
-        return False
-
-def download_general(url, chat_id, user_id, is_group=False):
-    try:
-        bot.send_message(chat_id, "🌐 در حال دریافت از سایت...")
-        try:
-            ydl_opts = {
-                "quiet": True,
-                "no_warnings": True,
-                "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-                "ignoreerrors": True,
-                "format": "best[filesize<300M]/best",
-                "socket_timeout": 30,
-                "retries": 3,
-                "fragment_retries": 3,
-                "force_generic_extractor": True,
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-                }
-            }
-            msg = bot.send_message(chat_id, "⏳ در حال دریافت اطلاعات...")
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    title = clean_filename(info.get("title", "file"))
-                    filename = None
-                    for f in os.listdir(DOWNLOAD_PATH):
-                        if title in f:
-                            filename = os.path.join(DOWNLOAD_PATH, f)
-                            break
-                    if not filename or not os.path.exists(filename):
-                        files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
-                        if files:
-                            filename = os.path.join(DOWNLOAD_PATH, files[-1])
-                    if filename and os.path.exists(filename):
-                        size = os.path.getsize(filename)
-                        if size <= MAX_FILE_SIZE:
-                            bot.edit_message_text("📤 در حال آپلود...", chat_id, msg.message_id)
-                            with open(filename, "rb") as f:
-                                if filename.endswith((".mp4", ".mkv", ".webm")):
-                                    bot.send_video(chat_id, f, caption=f"✅ {title}")
-                                elif filename.endswith((".mp3", ".m4a")):
-                                    bot.send_audio(chat_id, f, caption=f"✅ {title}")
-                                elif filename.endswith((".jpg", ".jpeg", ".png", ".gif")):
-                                    bot.send_photo(chat_id, f, caption=f"✅ {title}")
-                                else:
-                                    bot.send_document(chat_id, f, caption=f"✅ {title}")
-                            db.add_download(user_id, chat_id, url, "general", size, 
-                                          "group" if is_group else "private", "Other")
-                            os.remove(filename)
-                            bot.delete_message(chat_id, msg.message_id)
-                            return True
-        except Exception as e:
-            print(f"خطا در روش عمومی: {e}")
-        
-        try:
-            api_url = "https://api.cobalt.tools/api/json"
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Content-Type": "application/json",
-                "Accept": "application/json"
-            }
-            data = {"url": url, "downloadMode": "auto", "vQuality": "max"}
-            response = requests.post(api_url, json=data, headers=headers, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "success" and result.get("url"):
-                    download_url = result["url"]
-                    file_response = requests.get(download_url, timeout=60)
-                    if file_response.status_code == 200:
-                        filename = f"{DOWNLOAD_PATH}/download_{int(time.time())}.mp4"
-                        with open(filename, "wb") as f:
-                            f.write(file_response.content)
+                        break
+                if not filename or not os.path.exists(filename):
+                    files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+                    if files:
+                        filename = os.path.join(DOWNLOAD_PATH, files[-1])
+                if filename and os.path.exists(filename):
+                    size = os.path.getsize(filename)
+                    if size <= MAX_FILE_SIZE:
+                        bot.edit_message_text("📤 در حال آپلود...", chat_id, msg.message_id)
                         with open(filename, "rb") as f:
-                            bot.send_video(chat_id, f, caption="✅ دانلود شد")
-                        db.add_download(user_id, chat_id, url, "video", len(file_response.content), 
+                            if filename.endswith((".mp4", ".mkv", ".webm")):
+                                bot.send_video(chat_id, f, caption=f"✅ {title}")
+                            elif filename.endswith((".mp3", ".m4a")):
+                                bot.send_audio(chat_id, f, caption=f"✅ {title}")
+                            elif filename.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                                bot.send_photo(chat_id, f, caption=f"✅ {title}")
+                            else:
+                                bot.send_document(chat_id, f, caption=f"✅ {title}")
+                        db.add_download(user_id, chat_id, url, "general", size, 
                                       "group" if is_group else "private", "Other")
                         os.remove(filename)
+                        bot.delete_message(chat_id, msg.message_id)
                         return True
-        except:
-            pass
-        
-        bot.send_message(chat_id, "❌ خطا در دریافت اطلاعات")
+        bot.edit_message_text("❌ خطا در دریافت اطلاعات", chat_id, msg.message_id)
         return False
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا: {str(e)[:200]}")
@@ -485,15 +351,6 @@ def download_general(url, chat_id, user_id, is_group=False):
 def download_video(url, chat_id, user_id, is_group=False):
     try:
         platform = detect_platform(url)
-        if platform == "TikTok":
-            download_tiktok(url, chat_id, user_id, is_group)
-            return
-        if platform == "Instagram":
-            download_instagram(url, chat_id, user_id, is_group)
-            return
-        if platform == "Pinterest":
-            download_pinterest(url, chat_id, user_id, is_group)
-            return
         download_general(url, chat_id, user_id, is_group)
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا: {str(e)[:200]}")
@@ -636,8 +493,7 @@ def start(message):
         "ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 🤖\n"
         "از همه سایت‌ها دانلود میکنم!\n\n"
         "✅ پشتیبانی: YouTube | TikTok | Instagram\n"
-        "✅ Pinterest | Twitter | Facebook\n"
-        "✅ تمام سایت‌های فارسی\n"
+        "✅ تمام سایت‌ها\n"
         "✅ حجم: ۳۰۰ مگابایت\n\n"
         "📌 لینک رو بفرست!"
     )
