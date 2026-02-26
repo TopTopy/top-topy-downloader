@@ -10,6 +10,7 @@ import yt_dlp
 import sqlite3
 import requests
 from urllib.parse import urlparse, urljoin
+import random
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -55,13 +56,8 @@ def resolve_short_url(url):
         short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be']
         parsed = urlparse(url)
         if any(domain in parsed.netloc for domain in short_domains):
-            response = requests.head(url, allow_redirects=False, timeout=10)
-            if 300 <= response.status_code < 400:
-                redirect_url = response.headers.get('Location')
-                if redirect_url:
-                    if not redirect_url.startswith('http'):
-                        redirect_url = urljoin(url, redirect_url)
-                    return redirect_url
+            response = requests.head(url, allow_redirects=True, timeout=10)
+            return response.url
         return url
     except Exception as e:
         print(f"خطا در تشخیص لینک کوتاه: {e}")
@@ -277,7 +273,7 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود =================
+# ================= تابع دانلود با پشتیبانی قوی از Pinterest =================
 def download_video(url, chat_id, user_id, is_group=False):
     try:
         original_url = url
@@ -289,31 +285,55 @@ def download_video(url, chat_id, user_id, is_group=False):
         platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
 
+        # ========== تنظیمات پایه ==========
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
             "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
             "ignoreerrors": True,
+            "extract_flat": False,
         }
 
-        if platform == "Pinterest" or "pinterest" in url.lower():
+        # ========== پشتیبانی ویژه از Pinterest ==========
+        if platform == "Pinterest":
             bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
+            
+            # لیست User-Agent های مختلف برای چرخش
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+            ]
+            
             ydl_opts.update({
                 "format": "best",
-                "extract_flat": False,
                 "force_generic_extractor": True,
                 "socket_timeout": 30,
-                "retries": 3,
+                "retries": 5,
+                "fragment_retries": 5,
                 "headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent": random.choice(user_agents),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                    "Accept-Language": "en-US,en;q=0.5",
+                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
                     "Referer": "https://www.pinterest.com/",
+                    "Origin": "https://www.pinterest.com",
+                    "Connection": "keep-alive",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "same-origin",
+                    "Sec-Fetch-User": "?1",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Cache-Control": "max-age=0",
                 },
                 "extractor_args": {
-                    "pinterest": {"skip": ["comments"], "download": "all"}
+                    "generic": {
+                        "no_playlist": True
+                    }
                 }
             })
+
         elif is_audio:
             ydl_opts.update({
                 "format": "bestaudio/best",
@@ -328,41 +348,40 @@ def download_video(url, chat_id, user_id, is_group=False):
 
         msg = bot.send_message(chat_id, f"⏳ **در حال دریافت از {platform} ...**", parse_mode="Markdown")
 
+        # ========== تلاش برای دریافت اطلاعات با روش‌های مختلف ==========
         info = None
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(url, download=False)
-                if platform == "Pinterest" and info_dict:
-                    if info_dict.get('entries'):
-                        bot.edit_message_text(f"📸 **آلبوم عکس پیدا شد...**", chat_id, msg.message_id, parse_mode="Markdown")
-                    elif info_dict.get('formats'):
-                        formats = info_dict.get('formats', [])
-                        if formats:
-                            ydl_opts['format'] = formats[-1]['format_id']
-                            bot.edit_message_text(f"✅ **فرمت مناسب پیدا شد**", chat_id, msg.message_id, parse_mode="Markdown")
-                info = ydl.extract_info(url, download=True)
-        except:
-            if platform == "Pinterest":
-                try:
-                    fallback_opts = {
-                        "quiet": True,
-                        "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-                        "format": "best",
-                        "force_generic_extractor": True,
-                    }
-                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                except:
-                    pass
+        methods = [
+            lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=False),
+            lambda: yt_dlp.YoutubeDL({"quiet": True, "format": "best"}).extract_info(url, download=False),
+            lambda: yt_dlp.YoutubeDL({"quiet": True, "force_generic_extractor": True}).extract_info(url, download=False)
+        ]
+
+        for i, method in enumerate(methods):
+            try:
+                bot.edit_message_text(f"⏳ **تلاش {i+1} از {len(methods)} ...**", chat_id, msg.message_id, parse_mode="Markdown")
+                info = method()
+                if info:
+                    bot.edit_message_text(f"✅ **اطلاعات دریافت شد**", chat_id, msg.message_id, parse_mode="Markdown")
+                    break
+            except Exception as e:
+                print(f"خطا در روش {i+1}: {e}")
+                continue
 
         if not info:
-            bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
+            bot.edit_message_text("❌ **خطا در دریافت اطلاعات**\nممکن است این پین خصوصی یا نیاز به لاگین داشته باشد.", 
+                                chat_id, msg.message_id, parse_mode="Markdown")
             return
+
+        # ========== دانلود فایل ==========
+        bot.edit_message_text(f"⏳ **در حال دانلود...**", chat_id, msg.message_id, parse_mode="Markdown")
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
 
         title = clean_filename(info.get("title", "file"))
         if not title or title == "file":
             title = clean_filename(url.split('/')[-1][:50])
 
+        # پیدا کردن فایل
         filename = None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
@@ -378,12 +397,14 @@ def download_video(url, chat_id, user_id, is_group=False):
             bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
+        # بررسی حجم
         size = os.path.getsize(filename)
         if size > MAX_FILE_SIZE:
             os.remove(filename)
             bot.edit_message_text("❌ **حجم فایل بیشتر از ۳۰۰MB**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
+        # آپلود فایل
         bot.edit_message_text("📤 **در حال آپلود ...**", chat_id, msg.message_id, parse_mode="Markdown")
 
         with open(filename, "rb") as f:
@@ -400,6 +421,7 @@ def download_video(url, chat_id, user_id, is_group=False):
                 bot.send_document(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "file"
 
+        # ذخیره آمار
         source = "group" if is_group else "private"
         db.add_download(user_id, chat_id, url, format_type, size, source, platform)
         os.remove(filename)
@@ -468,8 +490,6 @@ def admin_callback(call):
         text += f"👥 گروه‌های فعال امروز: {stats['active_groups']}\n"
         text += f"🔒 کاربران بلاک شده: {stats['blocked']}\n"
         text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n"
-        text += f"👤 حالت گروه: {'فعال' if stats['group_mode'] == 'ON' else 'غیرفعال'}\n"
-        text += f"👤 حالت خصوصی: {'فعال' if stats['private_mode'] == 'ON' else 'غیرفعال'}"
         
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
@@ -681,6 +701,10 @@ def webhook():
     update = telebot.types.Update.de_json(json_str)
     bot.process_new_updates([update])
     return "OK", 200
+
+@app.route('/')
+def home():
+    return "ربات فعال است - از دستور /admin استفاده کنید"
 
 # ================= اجرا =================
 if __name__ == "__main__":
