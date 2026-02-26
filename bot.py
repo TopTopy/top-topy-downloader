@@ -18,8 +18,8 @@ DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 REQUIRED_CHANNELS = [
-    ("@top_topy_downloader", 3828073352),
-    ("@IdTOP_TOPY", 3872568492)
+    ("@top_topy_downloader", "https://t.me/top_topy_downloader"),
+    ("@IdTOP_TOPY", "https://t.me/IdTOP_TOPY")
 ]
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -189,17 +189,6 @@ class Database:
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
 
-    # بررسی عضویت در کانال‌ها
-    def check_membership(self,user_id):
-        try:
-            for username, _ in REQUIRED_CHANNELS:
-                member = bot.get_chat_member(username,user_id)
-                if member.status not in ['member','administrator','creator']:
-                    return False
-            return True
-        except:
-            return False
-
     # آمار
     def get_stats(self):
         today=datetime.now().strftime('%Y-%m-%d')
@@ -250,14 +239,25 @@ db=Database()
 bot=telebot.TeleBot(TOKEN)
 app=Flask(__name__)
 
-# ================= دانلود =================
+# ================= تابع بررسی عضویت با دکمه =================
+def force_join_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    for name, link in REQUIRED_CHANNELS:
+        markup.add(InlineKeyboardButton(f"📢 عضویت در {name}", url=link))
+    markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
+    return markup
+
+# ================= دانلود (رفع خطای ffmpeg) =================
 def download_video(url,chat_id,user_id,is_group=False):
     try:
-        if not db.check_membership(user_id):
-            bot.send_message(chat_id,"⛔ برای استفاده از ربات ابتدا در کانال‌های ما عضو شوید!")
-            return
         platform=detect_platform(url)
-        ydl_opts={"quiet":True,"no_warnings":True,"outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s"}
+        # اصلاح: استفاده از فرمت آماده برای جلوگیری از نیاز به ffmpeg
+        ydl_opts={
+            "quiet":True,
+            "no_warnings":True,
+            "outtmpl":f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
+            "format":"best[ext=mp4]/best"  # این خط باعث میشه نیازی به merge نباشه
+        }
         msg=bot.send_message(chat_id,f"⏳ در حال دانلود از {platform} ...")
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info=ydl.extract_info(url,download=True)
@@ -300,13 +300,14 @@ def download_video(url,chat_id,user_id,is_group=False):
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-    
-    # بررسی عضویت اجباری
+
+    # بررسی عضویت اجباری با دکمه
     if not db.check_membership(message.from_user.id):
         bot.send_message(
             message.chat.id,
-            "⛔ برای استفاده از ربات ابتدا باید در کانال‌های زیر عضو شوید:\n" +
-            "\n".join([f"{username}" for username, _ in REQUIRED_CHANNELS])
+            "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
+            reply_markup=force_join_markup(),
+            parse_mode="Markdown"
         )
         return
 
@@ -320,6 +321,28 @@ def start(message):
     )
     bot.send_message(message.chat.id, welcome_text)
 
+@bot.callback_query_handler(func=lambda call: call.data == "check_join")
+def check_join_callback(call):
+    if db.check_membership(call.from_user.id):
+        bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
+        bot.edit_message_text(
+            "✅ عضویت شما تأیید شد. حالا می‌تونید از ربات استفاده کنید.",
+            call.message.chat.id,
+            call.message.message_id
+        )
+        # ارسال پیام خوش‌آمدگویی
+        welcome_text = (
+            f"🎬 سلام {call.from_user.first_name or call.from_user.username}!\n\n"
+            "من ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 هستم 🤖\n"
+            "می‌تونی منو به گروه خودت اضافه کنی یا مستقیم به من لینک بدی تا هر چیزی رو دانلود کنم!\n\n"
+            "✅ پشتیبانی از: یوتیوب، تیک‌تاک، اینستاگرام، توییتر، فیسبوک و سایر لینک‌ها\n"
+            "✅ می‌تونی هر چیزی که میخوای دانلود کنی: ویدیو، آهنگ، عکس، فایل‌ها و ...\n\n"
+            "📌 فقط کافیه لینک رو برای من بفرستی و من دانلود و برات ارسال می‌کنم."
+        )
+        bot.send_message(call.from_user.id, welcome_text)
+    else:
+        bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
+
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id!=ADMIN_ID:
@@ -329,8 +352,10 @@ def admin_panel(message):
     downloads=db.get_recent_downloads(10)
     groups=db.get_groups(10)
     markup=InlineKeyboardMarkup(row_width=2)
-    markup.add(InlineKeyboardButton("🟢 روشن",callback_data="on"))
-    markup.add(InlineKeyboardButton("🔴 خاموش",callback_data="off"))
+    markup.add(
+        InlineKeyboardButton("🟢 روشن",callback_data="on"),
+        InlineKeyboardButton("🔴 خاموش",callback_data="off")
+    )
     text=f"👑 پنل مدیریت\n\nآمار:\nکل کاربران: {stats['total_users']}\nدانلودها: {stats['total_downloads']}\nگروه‌ها: {stats['total_groups']}\nفعال امروز: {stats['active_today']}\nبلاک شده: {stats['blocked']}\n\nآخرین کاربران:\n"
     for u in users:
         text+=f"{u[0]} | {u[2] or u[1]} | دانلود: {u[3]} | {'🔒' if u[4] else '✅'}\n"
@@ -342,14 +367,13 @@ def admin_panel(message):
         text+=f"{g[0]} | {g[1]} | {'فعال' if g[4] else 'غیرفعال'}\n"
     bot.send_message(message.chat.id,text,reply_markup=markup)
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    if call.data in ["on","off"]:
-        if call.from_user.id!=ADMIN_ID:
-            bot.answer_callback_query(call.id,"⛔ دسترسی ندارید")
-            return
-        db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
-        bot.edit_message_text(f"وضعیت جدید: {call.data.upper()}",call.message.chat.id,call.message.message_id)
+@bot.callback_query_handler(func=lambda call: call.data in ["on","off"])
+def toggle_callback(call):
+    if call.from_user.id!=ADMIN_ID:
+        bot.answer_callback_query(call.id,"⛔ دسترسی ندارید")
+        return
+    db.set_setting("bot_status","ON" if call.data=="on" else "OFF")
+    bot.edit_message_text(f"✅ وضعیت ربات به {call.data.upper()} تغییر کرد",call.message.chat.id,call.message.message_id)
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
@@ -360,12 +384,13 @@ def handle_message(message):
     if message.chat.type in ["group","supergroup"]:
         db.add_group(message.chat.id,message.chat.title)
 
-    # بررسی عضویت اجباری قبل از دانلود
+    # بررسی عضویت اجباری با دکمه
     if not db.check_membership(message.from_user.id):
         bot.send_message(
             message.chat.id,
-            "⛔ برای استفاده از ربات ابتدا باید در کانال‌های زیر عضو شوید:\n" +
-            "\n".join([f"{username}" for username, _ in REQUIRED_CHANNELS])
+            "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
+            reply_markup=force_join_markup(),
+            parse_mode="Markdown"
         )
         return
 
@@ -379,7 +404,7 @@ def handle_message(message):
         daemon=True
     ).start()
 
-# ================= وب پنل حرفه‌ای =================
+# ================= وب پنل =================
 HTML_TEMPLATE="""<!DOCTYPE html>
 <html dir="rtl">
 <head>
@@ -413,7 +438,7 @@ th{background:#667eea;color:#fff;}
 
 <h2>آخرین کاربران</h2>
 <table>
-<tr><th>ID</th><th>نام</th><th>دانلودها</th><<th>وضعیت</th></tr>
+<tr><th>ID</th><th>نام</th><th>دانلودها</th><th>وضعیت</th></tr>
 {% for u in users %}
 <tr>
 <td>{{ u[0] }}</td>
@@ -463,7 +488,6 @@ def home():
 
 @app.route('/toggle/<status>')
 def toggle(status):
-    # فقط ادمین می‌تواند ربات را روشن/خاموش کند
     if status in ["on","off"]:
         db.set_setting("bot_status","ON" if status=="on" else "OFF")
     return redirect('/')
