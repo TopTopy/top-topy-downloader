@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import re
+import random
 from datetime import datetime
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -10,7 +11,7 @@ import yt_dlp
 import sqlite3
 import requests
 from urllib.parse import urlparse, urljoin
-import random
+from flask import Flask, request
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -285,7 +286,6 @@ def download_video(url, chat_id, user_id, is_group=False):
         platform = detect_platform(url)
         is_audio = any(word in url.lower() for word in ['mp3', 'audio', 'music', 'sound'])
 
-        # ========== تنظیمات پایه ==========
         ydl_opts = {
             "quiet": True,
             "no_warnings": True,
@@ -294,11 +294,9 @@ def download_video(url, chat_id, user_id, is_group=False):
             "extract_flat": False,
         }
 
-        # ========== پشتیبانی ویژه از Pinterest ==========
         if platform == "Pinterest":
             bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
             
-            # لیست User-Agent های مختلف برای چرخش
             user_agents = [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15",
@@ -316,21 +314,7 @@ def download_video(url, chat_id, user_id, is_group=False):
                     "User-Agent": random.choice(user_agents),
                     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
-                    "Accept-Encoding": "gzip, deflate, br",
                     "Referer": "https://www.pinterest.com/",
-                    "Origin": "https://www.pinterest.com",
-                    "Connection": "keep-alive",
-                    "Sec-Fetch-Dest": "document",
-                    "Sec-Fetch-Mode": "navigate",
-                    "Sec-Fetch-Site": "same-origin",
-                    "Sec-Fetch-User": "?1",
-                    "Upgrade-Insecure-Requests": "1",
-                    "Cache-Control": "max-age=0",
-                },
-                "extractor_args": {
-                    "generic": {
-                        "no_playlist": True
-                    }
                 }
             })
 
@@ -348,7 +332,6 @@ def download_video(url, chat_id, user_id, is_group=False):
 
         msg = bot.send_message(chat_id, f"⏳ **در حال دریافت از {platform} ...**", parse_mode="Markdown")
 
-        # ========== تلاش برای دریافت اطلاعات با روش‌های مختلف ==========
         info = None
         methods = [
             lambda: yt_dlp.YoutubeDL(ydl_opts).extract_info(url, download=False),
@@ -363,25 +346,29 @@ def download_video(url, chat_id, user_id, is_group=False):
                 if info:
                     bot.edit_message_text(f"✅ **اطلاعات دریافت شد**", chat_id, msg.message_id, parse_mode="Markdown")
                     break
-            except Exception as e:
-                print(f"خطا در روش {i+1}: {e}")
+            except:
                 continue
 
-        if not info:
-            bot.edit_message_text("❌ **خطا در دریافت اطلاعات**\nممکن است این پین خصوصی یا نیاز به لاگین داشته باشد.", 
-                                chat_id, msg.message_id, parse_mode="Markdown")
+        if info is None:
+            bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # ========== دانلود فایل ==========
         bot.edit_message_text(f"⏳ **در حال دانلود...**", chat_id, msg.message_id, parse_mode="Markdown")
+        
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
 
-        title = clean_filename(info.get("title", "file"))
+        if info is None:
+            bot.edit_message_text("❌ **خطا در دانلود فایل**", chat_id, msg.message_id, parse_mode="Markdown")
+            return
+
+        title = "file"
+        if isinstance(info, dict):
+            title = clean_filename(info.get("title", "file"))
+        
         if not title or title == "file":
             title = clean_filename(url.split('/')[-1][:50])
 
-        # پیدا کردن فایل
         filename = None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
@@ -397,14 +384,12 @@ def download_video(url, chat_id, user_id, is_group=False):
             bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # بررسی حجم
         size = os.path.getsize(filename)
         if size > MAX_FILE_SIZE:
             os.remove(filename)
             bot.edit_message_text("❌ **حجم فایل بیشتر از ۳۰۰MB**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        # آپلود فایل
         bot.edit_message_text("📤 **در حال آپلود ...**", chat_id, msg.message_id, parse_mode="Markdown")
 
         with open(filename, "rb") as f:
@@ -421,7 +406,6 @@ def download_video(url, chat_id, user_id, is_group=False):
                 bot.send_document(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "file"
 
-        # ذخیره آمار
         source = "group" if is_group else "private"
         db.add_download(user_id, chat_id, url, format_type, size, source, platform)
         os.remove(filename)
@@ -431,37 +415,39 @@ def download_video(url, chat_id, user_id, is_group=False):
         bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
 
 # ================= پنل ادمین کامل =================
-def admin_panel_main(message):
+@bot.message_handler(commands=['admin'])
+def admin_command(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⛔ شما دسترسی به پنل ادمین ندارید!")
+        return
+    
     stats = db.get_stats()
-    text = f"👑 **پنل مدیریت اصلی**\n\n"
+    
+    text = f"👑 **پنل مدیریت** 👑\n\n"
     text += f"📊 **آمار کلی:**\n"
-    text += f"👥 کاربران: {stats['total_users']}\n"
-    text += f"📥 دانلودها: {stats['total_downloads']}\n"
-    text += f"👥 گروه‌ها: {stats['total_groups']}\n"
-    text += f"🟢 فعال امروز: {stats['active_today']}\n"
-    text += f"🔒 بلاک شده: {stats['blocked']}\n"
-    text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n"
+    text += f"👥 کاربران کل: {stats['total_users']}\n"
+    text += f"📥 دانلودهای کل: {stats['total_downloads']}\n"
+    text += f"👥 گروه‌های کل: {stats['total_groups']}\n"
+    text += f"🟢 کاربران فعال امروز: {stats['active_today']}\n"
+    text += f"👥 گروه‌های فعال امروز: {stats['active_groups']}\n"
+    text += f"🔒 کاربران بلاک شده: {stats['blocked']}\n"
+    text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n\n"
+    text += f"🔽 از دکمه‌های زیر استفاده کنید:"
     
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🟢 روشن/خاموش", callback_data="admin_toggle"),
         InlineKeyboardButton("📊 آمار کامل", callback_data="admin_stats"),
         InlineKeyboardButton("👥 لیست کاربران", callback_data="admin_users"),
-        InlineKeyboardButton("📥 دانلودها", callback_data="admin_downloads"),
-        InlineKeyboardButton("👥 گروه‌ها", callback_data="admin_groups"),
+        InlineKeyboardButton("📥 لیست دانلودها", callback_data="admin_downloads"),
+        InlineKeyboardButton("👥 لیست گروه‌ها", callback_data="admin_groups"),
         InlineKeyboardButton("🔒 بلاک کاربر", callback_data="admin_block"),
         InlineKeyboardButton("🔓 آنبلاک کاربر", callback_data="admin_unblock"),
         InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
         InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset"),
-        InlineKeyboardButton("❌ بستن", callback_data="admin_close")
+        InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")
     )
-    return text, markup
-
-@bot.message_handler(commands=['admin'])
-def admin_command(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    text, markup = admin_panel_main(message)
+    
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
@@ -477,9 +463,9 @@ def admin_callback(call):
         new = "OFF" if current == "ON" else "ON"
         db.set_setting("bot_status", new)
         bot.answer_callback_query(call.id, f"✅ وضعیت به {new} تغییر کرد")
-        text, markup = admin_panel_main(call.message)
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        admin_command(call.message)
+    
     elif action == "stats":
         stats = db.get_stats()
         text = f"📊 **آمار کامل**\n\n"
@@ -492,9 +478,9 @@ def admin_callback(call):
         text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n"
         
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        markup.add(InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+    
     elif action == "users":
         users = db.get_users(20)
         text = "👥 **۲۰ کاربر آخر:**\n\n"
@@ -503,18 +489,18 @@ def admin_callback(call):
             name = u[2] or u[1] or 'ناشناس'
             text += f"{status} `{u[0]}` | {name} | دانلود: {u[3]}\n"
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        markup.add(InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+    
     elif action == "downloads":
         downloads = db.get_recent_downloads(20)
         text = "📥 **۲۰ دانلود آخر:**\n\n"
         for d in downloads:
             text += f"👤 `{d[0]}` | {d[2]} | {d[3][:16]}\n"
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        markup.add(InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+    
     elif action == "groups":
         groups = db.get_groups(20)
         text = "👥 **۲۰ گروه آخر:**\n\n"
@@ -522,24 +508,24 @@ def admin_callback(call):
             status = "✅" if g[4] else "❌"
             text += f"{status} `{g[0]}` | {g[1][:30]} | {g[3][:16]}\n"
         markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        markup.add(InlineKeyboardButton("🔙 بازگشت به پنل", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+    
     elif action == "block":
         bot.edit_message_text("🔒 **آیدی عددی کاربر مورد نظر برای بلاک را بفرستید:**", 
                             call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         bot.register_next_step_handler(call.message, block_user_handler)
-
+    
     elif action == "unblock":
         bot.edit_message_text("🔓 **آیدی عددی کاربر مورد نظر برای آنبلاک را بفرستید:**", 
                             call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         bot.register_next_step_handler(call.message, unblock_user_handler)
-
+    
     elif action == "broadcast":
         bot.edit_message_text("📢 **متن پیام همگانی را بفرستید:**", 
                             call.message.chat.id, call.message.message_id, parse_mode="Markdown")
         bot.register_next_step_handler(call.message, broadcast_handler)
-
+    
     elif action == "reset":
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -548,19 +534,19 @@ def admin_callback(call):
         )
         bot.edit_message_text("⚠️ **آیا از ریست آمار اطمینان دارید؟**\nاین عمل غیرقابل بازگشت است!", 
                             call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+    
     elif action == "reset_confirm":
         db.cursor.execute("DELETE FROM downloads")
         db.cursor.execute("UPDATE settings SET value='0' WHERE key IN ('total_downloads', 'total_users', 'total_groups')")
         db.conn.commit()
         bot.answer_callback_query(call.id, "✅ آمار با موفقیت ریست شد")
-        text, markup = admin_panel_main(call.message)
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        admin_command(call.message)
+    
     elif action == "back":
-        text, markup = admin_panel_main(call.message)
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
+        bot.delete_message(call.message.chat.id, call.message.message_id)
+        admin_command(call.message)
+    
     elif action == "close":
         bot.delete_message(call.message.chat.id, call.message.message_id)
 
@@ -569,6 +555,7 @@ def block_user_handler(message):
         user_id = int(message.text.strip())
         db.block_user(user_id)
         bot.reply_to(message, f"✅ کاربر `{user_id}` با موفقیت بلاک شد.", parse_mode="Markdown")
+        admin_command(message)
     except:
         bot.reply_to(message, "❌ خطا: لطفاً یک آیدی عددی معتبر بفرستید.")
 
@@ -577,6 +564,7 @@ def unblock_user_handler(message):
         user_id = int(message.text.strip())
         db.unblock_user(user_id)
         bot.reply_to(message, f"✅ کاربر `{user_id}` با موفقیت آنبلاک شد.", parse_mode="Markdown")
+        admin_command(message)
     except:
         bot.reply_to(message, "❌ خطا: لطفاً یک آیدی عددی معتبر بفرستید.")
 
@@ -600,6 +588,7 @@ def broadcast_handler(message):
     
     bot.edit_message_text(f"✅ **نتیجه ارسال همگانی**\n\n📤 ارسال شده: {sent}\n❌ ناموفق: {failed}", 
                         status_msg.chat.id, status_msg.message_id, parse_mode="Markdown")
+    admin_command(message)
 
 # ================= تلگرام =================
 @bot.message_handler(commands=['start'])
@@ -639,19 +628,7 @@ def check_join_callback(call):
             call.message.chat.id,
             call.message.message_id
         )
-        welcome_text = (
-            f"🎬 سلام {call.from_user.first_name or call.from_user.username}!\n\n"
-            "من ربات **𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿** هستم 🤖\n"
-            "می‌تونی منو به گروه خودت اضافه کنی یا مستقیم به من لینک بدی تا هر چیزی رو دانلود کنم!\n\n"
-            "✅ **پشتیبانی از:**\n"
-            "• YouTube | TikTok | Instagram\n"
-            "• Twitter | Facebook | Pinterest\n"
-            "• و بیش از ۱۰۰۰ سایت دیگر\n\n"
-            "✅ **لینک‌های کوتاه:**\n"
-            "• پشتیبانی کامل از pin.it و سایر لینک‌های کوتاه\n\n"
-            "📌 فقط کافیه لینک رو برای من بفرستی!"
-        )
-        bot.send_message(call.from_user.id, welcome_text)
+        start(call.message)
     else:
         bot.answer_callback_query(call.id, "❌ شما هنوز عضو نشده‌اید!", show_alert=True)
 
@@ -692,7 +669,6 @@ def handle_message(message):
     ).start()
 
 # ================= وب‌هوک =================
-from flask import Flask, request
 app = Flask(__name__)
 
 @app.route('/webhook', methods=['POST'])
@@ -713,5 +689,5 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     print(f"🌐 Webhook: {WEBHOOK_URL}")
-    print("✅ پنل ادمین در خود ربات فعال شد")
+    print("✅ پنل ادمین فعال است - با دستور /admin")
     app.run(host="0.0.0.0", port=PORT)
