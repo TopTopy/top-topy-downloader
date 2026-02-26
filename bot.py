@@ -68,7 +68,6 @@ def detect_platform(url):
         'namasha': ['namasha.com'],
         'clips': ['clips.ir'],
         'tamasha': ['tamasha.com'],
-        'twitter': ['twitter.com', 'x.com'],
         'threads': ['threads.net'],
         'linkedin': ['linkedin.com'],
         'tumblr': ['tumblr.com'],
@@ -342,184 +341,354 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود قدرتمند و جامع =================
-def download_media(url, chat_id, user_id, is_group=False):
-    """
-    تابع دانلود قدرتمند که از تمام سایت‌ها و فرمت‌ها پشتیبانی می‌کند
-    """
+# ================= تابع دانلود اختصاصی پینترست (اصلاح شده نهایی) =================
+def download_pinterest(url, chat_id, user_id, is_group=False):
     try:
-        platform = detect_platform(url)
-        bot.send_message(chat_id, f"🌐 **در حال دریافت از {platform}...**", parse_mode="Markdown")
+        bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
         
-        # لیست User-Agent های مختلف برای چرخش
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (iPad; CPU OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Android 13; Mobile; rv:109.0) Gecko/109.0 Firefox/119.0",
-            "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
-        ]
+        # تبدیل لینک کوتاه
+        if "pin.it" in url:
+            try:
+                response = requests.head(url, allow_redirects=True, timeout=10, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                })
+                url = response.url
+                bot.send_message(chat_id, f"🔗 لینک اصلی: `{url}`", parse_mode="Markdown")
+            except:
+                pass
         
-        # تنظیمات پیشرفته yt-dlp
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-            "outtmpl": f"{DOWNLOAD_PATH}/%(title)s_%(id)s.%(ext)s",
-            "ignoreerrors": True,
-            "format": "best[filesize<300M]/bestvideo[filesize<300M]+bestaudio[filesize<300M]/best",
-            "socket_timeout": 30,
-            "retries": 5,
-            "fragment_retries": 5,
-            "continuedl": True,
-            "buffersize": 1024,
-            "no_color": True,
-            "extract_flat": False,
-            "force_generic_extractor": False,
-            "http_headers": {
-                "User-Agent": random.choice(user_agents),
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "DNT": "1",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-                "Sec-Fetch-Dest": "document",
-                "Sec-Fetch-Mode": "navigate",
-                "Sec-Fetch-Site": "none",
-                "Sec-Fetch-User": "?1",
-                "Cache-Control": "max-age=0",
-            },
-            "extractor_args": {
-                "youtube": {
-                    "player_client": "android",  # برای یوتیوب
-                    "skip": "dash",  # رد کردن dash برای سرعت بیشتر
-                },
-                "tiktok": {
-                    "app_version": "latest",
-                    "web_user_agent": random.choice(user_agents),
-                    "download_video": True,
-                },
-                "instagram": {
-                    "embed": True,
-                    "download_videos": True,
-                },
-                "twitter": {
-                    "embed": True,
-                    "download_videos": True,
-                },
-                "facebook": {
-                    "embed": True,
-                    "download_videos": True,
-                }
-            },
-            "postprocessors": [
-                {  # اگر نیاز به تبدیل فرمت باشه
-                    "key": "FFmpegVideoConvertor",
-                    "preferedformat": "mp4",
-                }
-            ],
-        }
-        
-        # اضافه کردن کوکی برای سایت‌های خاص
-        cookie_file = "cookies.txt"
-        if os.path.exists(cookie_file):
-            ydl_opts["cookiefile"] = cookie_file
-        
-        msg = bot.send_message(chat_id, "⏳ **در حال دریافت اطلاعات...**", parse_mode="Markdown")
-        
-        # روش 1: yt-dlp
+        # روش 1: استفاده از API جایگزین Pinterest
         try:
+            # استخراج ID پین
+            pin_id = None
+            if "/pin/" in url:
+                pin_id = url.split("/pin/")[-1].split("/")[0].split("?")[0]
+            elif "pin_id=" in url:
+                pin_id = url.split("pin_id=")[-1].split("&")[0]
+            
+            if pin_id:
+                # API‌های مختلف برای دریافت اطلاعات پین
+                apis = [
+                    f"https://www.pinterest.com/resource/PinResource/get/?source_url=/pin/{pin_id}/&data=<?xml version='1.0' encoding='UTF-8'?><Pin id='{pin_id}'></Pin>",
+                    f"https://api.pinterest.com/v1/pins/{pin_id}/?access_token=",
+                    f"https://ar.savepin.io/pin/{pin_id}"
+                ]
+                
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "application/json",
+                    "Accept-Language": "en-US,en;q=0.9",
+                }
+                
+                for api_url in apis:
+                    try:
+                        response = requests.get(api_url, headers=headers, timeout=15)
+                        if response.status_code == 200:
+                            data = response.json()
+                            
+                            # استخراج URL عکس از پاسخ‌های مختلف
+                            img_url = None
+                            
+                            if "data" in data and "images" in data["data"]:
+                                images = data["data"]["images"]
+                                if "orig" in images:
+                                    img_url = images["orig"]["url"]
+                                elif "600x" in images:
+                                    img_url = images["600x"]["url"]
+                                elif "736x" in images:
+                                    img_url = images["736x"]["url"]
+                            elif "image_original_url" in str(data):
+                                import re
+                                match = re.search(r'"image_original_url":"([^"]+)"', response.text)
+                                if match:
+                                    img_url = match.group(1).replace('\\u002F', '/')
+                            
+                            if img_url:
+                                # دانلود عکس
+                                img_response = requests.get(img_url, headers=headers, timeout=30)
+                                if img_response.status_code == 200:
+                                    filename = f"{DOWNLOAD_PATH}/pinterest_{pin_id}.jpg"
+                                    with open(filename, "wb") as f:
+                                        f.write(img_response.content)
+                                    
+                                    size = os.path.getsize(filename)
+                                    if size <= MAX_FILE_SIZE:
+                                        with open(filename, "rb") as f:
+                                            bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                                        
+                                        db.add_download(user_id, chat_id, url, "photo", size, 
+                                                      "group" if is_group else "private", "Pinterest")
+                                        os.remove(filename)
+                                        return True
+                    except:
+                        continue
+        except Exception as e:
+            print(f"خطا در روش API پینترست: {e}")
+        
+        # روش 2: استفاده از yt-dlp برای پینترست
+        try:
+            bot.send_message(chat_id, "🔄 **روش جایگزین: yt-dlp...**", parse_mode="Markdown")
+            
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_%(title)s.%(ext)s",
+                "ignoreerrors": True,
+                "format": "best",
+                "extract_flat": False,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                }
+            }
+            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                # استخراج اطلاعات بدون دانلود
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(url, download=True)
                 
                 if info:
-                    title = clean_filename(info.get("title", "media"))
-                    ext = info.get("ext", "mp4")
-                    duration = info.get("duration", 0)
-                    
-                    bot.edit_message_text(f"📥 **در حال دانلود:**\n`{title[:50]}...`", 
-                                        chat_id, msg.message_id, parse_mode="Markdown")
-                    
-                    # دانلود فایل
-                    ydl.download([url])
-                    
                     # پیدا کردن فایل دانلود شده
                     filename = None
                     for f in os.listdir(DOWNLOAD_PATH):
-                        if title in f or info.get("id") in f:
+                        if "pinterest" in f or info.get("id", "") in f:
                             filename = os.path.join(DOWNLOAD_PATH, f)
                             break
                     
                     if not filename:
-                        files = sorted(os.listdir(DOWNLOAD_PATH), 
-                                     key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+                        files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
                         if files:
                             filename = os.path.join(DOWNLOAD_PATH, files[-1])
                     
                     if filename and os.path.exists(filename):
                         size = os.path.getsize(filename)
                         
-                        if size <= MAX_FILE_SIZE:
-                            bot.edit_message_text("📤 **در حال آپلود به تلگرام...**", 
-                                                chat_id, msg.message_id, parse_mode="Markdown")
-                            
-                            with open(filename, "rb") as f:
-                                # تشخیص نوع فایل و ارسال مناسب
-                                if filename.endswith((".mp4", ".mkv", ".webm", ".avi", ".mov", ".flv", ".wmv", ".m4v")):
-                                    if duration and duration < 60:  # ویدیوهای کوتاه به عنوان GIF
-                                        bot.send_animation(chat_id, f, caption=f"✅ **{title}**")
-                                    else:
-                                        bot.send_video(chat_id, f, caption=f"✅ **{title}**", 
-                                                      supports_streaming=True, timeout=60)
-                                elif filename.endswith((".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg", ".wma")):
-                                    bot.send_audio(chat_id, f, caption=f"✅ **{title}**", timeout=60)
-                                elif filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg")):
-                                    bot.send_photo(chat_id, f, caption=f"✅ **{title}**")
-                                else:
-                                    bot.send_document(chat_id, f, caption=f"✅ **{title}**", 
-                                                    visible_file_name=title, timeout=60)
-                            
-                            db.add_download(user_id, chat_id, url, "media", size, 
-                                          "group" if is_group else "private", platform)
-                            os.remove(filename)
-                            bot.delete_message(chat_id, msg.message_id)
-                            return True
-                        else:
-                            bot.edit_message_text(f"❌ **حجم فایل بیش از حد مجاز ({size/1024/1024:.1f}MB)**", 
-                                                chat_id, msg.message_id, parse_mode="Markdown")
-                    else:
-                        bot.edit_message_text("❌ **فایل دانلود شده پیدا نشد**", 
-                                            chat_id, msg.message_id, parse_mode="Markdown")
-                else:
-                    bot.edit_message_text("❌ **اطلاعاتی یافت نشد**", 
-                                        chat_id, msg.message_id, parse_mode="Markdown")
-                    
+                        with open(filename, "rb") as f:
+                            if filename.endswith((".jpg", ".jpeg", ".png")):
+                                bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                            elif filename.endswith((".mp4", ".webm")):
+                                bot.send_video(chat_id, f, caption=f"✅ **ویدیو پینترست**")
+                            else:
+                                bot.send_document(chat_id, f, caption=f"✅ **محتوای پینترست**")
+                        
+                        db.add_download(user_id, chat_id, url, "media", size, 
+                                      "group" if is_group else "private", "Pinterest")
+                        os.remove(filename)
+                        return True
         except Exception as e:
-            print(f"خطا در روش yt-dlp: {e}")
-            bot.edit_message_text(f"🔄 **تلاش با روش جایگزین...**", 
-                                chat_id, msg.message_id, parse_mode="Markdown")
+            print(f"خطا در روش yt-dlp پینترست: {e}")
         
-        # روش 2: API cobalt.tools (برای سایت‌های خارجی)
+        # روش 3: استفاده از سرویس‌های第三方
         try:
-            bot.edit_message_text("🔄 **تلاش با API پیشرفته...**", 
-                                chat_id, msg.message_id, parse_mode="Markdown")
+            bot.send_message(chat_id, "🔄 **روش جایگزین: سرویس第三方...**", parse_mode="Markdown")
             
+            # سرویس‌های دانلود پینترست
+            download_services = [
+                f"https://pinterestdownloader.com/download?url={url}",
+                f"https://www.expertstool.com/pinterest-image-downloader/?url={url}",
+                f"https://pinterest.online-downloader.com/download?url={url}"
+            ]
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            }
+            
+            for service_url in download_services:
+                try:
+                    response = requests.get(service_url, headers=headers, timeout=15)
+                    if response.status_code == 200:
+                        # استخراج لینک دانلود از صفحه
+                        import re
+                        download_links = re.findall(r'https?://[^\s"\']+\.(jpg|jpeg|png|gif|mp4)', response.text)
+                        
+                        for link in download_links:
+                            if link.startswith("http"):
+                                img_response = requests.get(link, headers=headers, timeout=30)
+                                if img_response.status_code == 200:
+                                    filename = f"{DOWNLOAD_PATH}/pinterest_service_{int(time.time())}.jpg"
+                                    with open(filename, "wb") as f:
+                                        f.write(img_response.content)
+                                    
+                                    with open(filename, "rb") as f:
+                                        bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                                    
+                                    db.add_download(user_id, chat_id, url, "photo", len(img_response.content), 
+                                                  "group" if is_group else "private", "Pinterest")
+                                    os.remove(filename)
+                                    return True
+                except:
+                    continue
+        except Exception as e:
+            print(f"خطا در روش سرویس第三方: {e}")
+        
+        # روش 4: تلاش با yt-dlp و تنظیمات عمومی
+        try:
+            bot.send_message(chat_id, "🔄 **روش نهایی: تلاش عمومی...**", parse_mode="Markdown")
+            
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "outtmpl": f"{DOWNLOAD_PATH}/pinterest_general_%(title)s.%(ext)s",
+                "ignoreerrors": True,
+                "format": "best",
+                "force_generic_extractor": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                }
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                if info:
+                    # پیدا کردن فایل
+                    files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+                    if files:
+                        filename = os.path.join(DOWNLOAD_PATH, files[-1])
+                        
+                        with open(filename, "rb") as f:
+                            if filename.endswith((".jpg", ".jpeg", ".png")):
+                                bot.send_photo(chat_id, f, caption=f"✅ **عکس پینترست**")
+                            elif filename.endswith((".mp4", ".webm")):
+                                bot.send_video(chat_id, f, caption=f"✅ **ویدیو پینترست**")
+                            else:
+                                bot.send_document(chat_id, f, caption=f"✅ **محتوای پینترست**")
+                        
+                        size = os.path.getsize(filename)
+                        db.add_download(user_id, chat_id, url, "media", size, 
+                                      "group" if is_group else "private", "Pinterest")
+                        os.remove(filename)
+                        return True
+        except Exception as e:
+            print(f"خطا در روش عمومی: {e}")
+        
+        # اگر هیچ روشی جواب نداد
+        bot.send_message(chat_id, 
+            "❌ **متأسفانه پینترست محدودیت دارد**\n\n"
+            "💡 **راه‌حل:**\n"
+            "• لینک را در مرورگر باز کنید\n"
+            "• روی عکس راست کلیک کنید\n"
+            "• گزینه 'ذخیره تصویر' را انتخاب کنید\n"
+            "• فایل را به ربات بفرستید",
+            parse_mode="Markdown")
+        
+        return False
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+        return False
+
+# ================= تابع دانلود تیک‌تاک =================
+def download_tiktok(url, chat_id, user_id, is_group=False):
+    try:
+        bot.send_message(chat_id, "🎵 **در حال دریافت از تیک‌تاک...**", parse_mode="Markdown")
+        
+        # روش 1: استفاده از API
+        try:
+            apis = [
+                {
+                    "url": "https://api.cobalt.tools/api/json",
+                    "headers": {
+                        "User-Agent": "Mozilla/5.0",
+                        "Content-Type": "application/json",
+                    }
+                },
+                {
+                    "url": "https://tikwm.com/api/",
+                    "headers": {
+                        "User-Agent": "Mozilla/5.0",
+                        "Content-Type": "application/x-www-form-urlencoded"
+                    }
+                }
+            ]
+            
+            for api in apis:
+                try:
+                    if "cobalt" in api["url"]:
+                        data = {"url": url, "downloadMode": "auto"}
+                        response = requests.post(api["url"], json=data, headers=api["headers"], timeout=30)
+                    elif "tikwm" in api["url"]:
+                        data = {"url": url, "hd": 1}
+                        response = requests.post(api["url"], data=data, headers=api["headers"], timeout=30)
+                    
+                    if response.status_code == 200:
+                        result = response.json()
+                        download_url = None
+                        
+                        if "cobalt" in api["url"] and result.get("status") == "success":
+                            download_url = result.get("url")
+                        elif "tikwm" in api["url"] and result.get("data"):
+                            download_url = result["data"].get("play") or result["data"].get("hdplay")
+                        
+                        if download_url:
+                            file_response = requests.get(download_url, timeout=60)
+                            if file_response.status_code == 200:
+                                filename = f"{DOWNLOAD_PATH}/tiktok_{int(time.time())}.mp4"
+                                with open(filename, "wb") as f:
+                                    f.write(file_response.content)
+                                
+                                with open(filename, "rb") as f:
+                                    bot.send_video(chat_id, f, caption=f"✅ **دانلود از تیک‌تاک**")
+                                
+                                db.add_download(user_id, chat_id, url, "video", len(file_response.content), 
+                                              "group" if is_group else "private", "TikTok")
+                                os.remove(filename)
+                                return True
+                except:
+                    continue
+        except:
+            pass
+        
+        # روش 2: yt-dlp
+        try:
+            ydl_opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "outtmpl": f"{DOWNLOAD_PATH}/tiktok_%(title)s.%(ext)s",
+                "ignoreerrors": True,
+                "format": "best",
+                "extractor_args": {"tiktok": {"app_version": "latest"}}
+            }
+            
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                if info:
+                    filename = None
+                    for f in os.listdir(DOWNLOAD_PATH):
+                        if info.get("title", "") in f:
+                            filename = os.path.join(DOWNLOAD_PATH, f)
+                            break
+                    
+                    if filename and os.path.exists(filename):
+                        size = os.path.getsize(filename)
+                        with open(filename, "rb") as f:
+                            bot.send_video(chat_id, f, caption=f"✅ **{info.get('title', 'تیک‌تاک')}**")
+                        
+                        db.add_download(user_id, chat_id, url, "video", size, 
+                                      "group" if is_group else "private", "TikTok")
+                        os.remove(filename)
+                        return True
+        except:
+            pass
+        
+        return False
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+        return False
+
+# ================= تابع دانلود اینستاگرام =================
+def download_instagram(url, chat_id, user_id, is_group=False):
+    try:
+        bot.send_message(chat_id, "📸 **در حال دریافت از اینستاگرام...**", parse_mode="Markdown")
+        
+        # روش 1: API cobalt.tools
+        try:
             api_url = "https://api.cobalt.tools/api/json"
             headers = {
-                "User-Agent": random.choice(user_agents),
+                "User-Agent": "Mozilla/5.0",
                 "Content-Type": "application/json",
-                "Accept": "application/json"
             }
-            data = {
-                "url": url,
-                "downloadMode": "auto",
-                "vQuality": "max",
-                "aFormat": "mp3",
-                "isAudioOnly": False
-            }
+            data = {"url": url, "downloadMode": "auto"}
             
             response = requests.post(api_url, json=data, headers=headers, timeout=30)
             if response.status_code == 200:
@@ -527,132 +696,153 @@ def download_media(url, chat_id, user_id, is_group=False):
                 if result.get("status") == "success" and result.get("url"):
                     download_url = result["url"]
                     
-                    bot.edit_message_text("📥 **در حال دانلود از API...**", 
-                                        chat_id, msg.message_id, parse_mode="Markdown")
-                    
-                    file_response = requests.get(download_url, timeout=120, stream=True)
+                    file_response = requests.get(download_url, timeout=60)
                     if file_response.status_code == 200:
-                        filename = f"{DOWNLOAD_PATH}/cobalt_{int(time.time())}.mp4"
-                        
+                        filename = f"{DOWNLOAD_PATH}/instagram_{int(time.time())}.mp4"
                         with open(filename, "wb") as f:
-                            for chunk in file_response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    f.write(chunk)
+                            f.write(file_response.content)
                         
-                        size = os.path.getsize(filename)
-                        if size <= MAX_FILE_SIZE:
-                            bot.edit_message_text("📤 **در حال آپلود...**", 
-                                                chat_id, msg.message_id, parse_mode="Markdown")
-                            
-                            with open(filename, "rb") as f:
-                                bot.send_video(chat_id, f, caption=f"✅ **دانلود از {platform}**")
-                            
-                            db.add_download(user_id, chat_id, url, "video", size, 
-                                          "group" if is_group else "private", platform)
-                            os.remove(filename)
-                            bot.delete_message(chat_id, msg.message_id)
-                            return True
-        except Exception as e:
-            print(f"خطا در روش API: {e}")
+                        with open(filename, "rb") as f:
+                            bot.send_video(chat_id, f, caption=f"✅ **دانلود از اینستاگرام**")
+                        
+                        db.add_download(user_id, chat_id, url, "video", len(file_response.content), 
+                                      "group" if is_group else "private", "Instagram")
+                        os.remove(filename)
+                        return True
+        except:
+            pass
         
-        # روش 3: روش مستقیم برای سایت‌های ایرانی
-        try:
-            bot.edit_message_text("🔄 **تلاش با روش مستقیم...**", 
-                                chat_id, msg.message_id, parse_mode="Markdown")
+        # روش 2: yt-dlp
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": f"{DOWNLOAD_PATH}/instagram_%(title)s.%(ext)s",
+            "ignoreerrors": True,
+            "format": "best",
+        }
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
             
-            headers = {
+            if info:
+                filename = None
+                for f in os.listdir(DOWNLOAD_PATH):
+                    if info.get("title", "") in f:
+                        filename = os.path.join(DOWNLOAD_PATH, f)
+                        break
+                
+                if filename and os.path.exists(filename):
+                    size = os.path.getsize(filename)
+                    with open(filename, "rb") as f:
+                        bot.send_video(chat_id, f, caption=f"✅ **{info.get('title', 'اینستاگرام')}**")
+                    
+                    db.add_download(user_id, chat_id, url, "video", size, 
+                                  "group" if is_group else "private", "Instagram")
+                    os.remove(filename)
+                    return True
+        
+        return False
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+        return False
+
+# ================= تابع دانلود عمومی برای بقیه سایت‌ها =================
+def download_general(url, chat_id, user_id, is_group=False):
+    try:
+        bot.send_message(chat_id, "🌐 **در حال دریافت از سایت...**", parse_mode="Markdown")
+        
+        # لیست User-Agent های مختلف
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+        ]
+        
+        # تنظیمات yt-dlp
+        ydl_opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
+            "ignoreerrors": True,
+            "format": "best[filesize<300M]/best",
+            "socket_timeout": 30,
+            "retries": 3,
+            "http_headers": {
                 "User-Agent": random.choice(user_agents),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                 "Accept-Language": "fa-IR,fa;q=0.9,en;q=0.8",
-                "Referer": url,
             }
-            
-            response = requests.get(url, headers=headers, timeout=15)
-            if response.status_code == 200:
-                # جستجوی لینک‌های مستقیم
-                patterns = [
-                    r'<video[^>]+src="([^"]+)"',
-                    r'<source[^>]+src="([^"]+)"',
-                    r'<a[^>]+href="([^"]+\.(mp4|mkv|webm|mp3|jpg|png))"',
-                    r'"video_url":"([^"]+)"',
-                    r'"contentUrl":"([^"]+)"',
-                    r'"url":"([^"]+\.mp4)"',
-                    r'data-url="([^"]+)"',
-                    r'href="([^"]+\.mp4)"',
-                    r'src="([^"]+\.mp4)"',
-                    r'file:"([^"]+)"',
-                    r'file:\s*"([^"]+)"',
-                    r'url:\s*"([^"]+)"',
-                    r'videoSrc:\s*"([^"]+)"',
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, response.text, re.IGNORECASE)
-                    if matches:
-                        media_url = matches[0]
-                        if isinstance(media_url, tuple):
-                            media_url = media_url[0]
-                        
-                        # تکمیل URL
-                        if media_url.startswith("//"):
-                            media_url = "https:" + media_url
-                        elif media_url.startswith("/"):
-                            media_url = urljoin(url, media_url)
-                        elif not media_url.startswith("http"):
-                            media_url = urljoin(url, media_url)
-                        
-                        bot.edit_message_text("📥 **در حال دانلود مستقیم...**", 
-                                            chat_id, msg.message_id, parse_mode="Markdown")
-                        
-                        media_response = requests.get(media_url, headers=headers, timeout=60, stream=True)
-                        if media_response.status_code == 200:
-                            ext = media_url.split(".")[-1].split("?")[0]
-                            filename = f"{DOWNLOAD_PATH}/direct_{int(time.time())}.{ext}"
-                            
-                            with open(filename, "wb") as f:
-                                for chunk in media_response.iter_content(chunk_size=8192):
-                                    if chunk:
-                                        f.write(chunk)
-                            
-                            size = os.path.getsize(filename)
-                            if size <= MAX_FILE_SIZE:
-                                with open(filename, "rb") as f:
-                                    if ext in ["mp4", "mkv", "webm", "avi", "mov"]:
-                                        bot.send_video(chat_id, f, caption=f"✅ **دانلود مستقیم**")
-                                    elif ext in ["mp3", "m4a", "wav"]:
-                                        bot.send_audio(chat_id, f, caption=f"✅ **دانلود مستقیم**")
-                                    elif ext in ["jpg", "jpeg", "png", "gif"]:
-                                        bot.send_photo(chat_id, f, caption=f"✅ **دانلود مستقیم**")
-                                    else:
-                                        bot.send_document(chat_id, f, caption=f"✅ **دانلود مستقیم**")
-                                
-                                db.add_download(user_id, chat_id, url, "direct", size, 
-                                              "group" if is_group else "private", platform)
-                                os.remove(filename)
-                                bot.delete_message(chat_id, msg.message_id)
-                                return True
-        except Exception as e:
-            print(f"خطا در روش مستقیم: {e}")
+        }
         
-        # اگر هیچ روشی جواب نداد
-        bot.edit_message_text(
-            "❌ **خطا در دانلود**\n\n"
-            "🔍 **دلایل ممکن:**\n"
-            "• لینک معتبر نیست\n"
-            "• محتوا خصوصی است\n"
-            "• حجم فایل بیش از ۳۰۰ مگابایت\n"
-            "• محدودیت منطقه‌ای وجود دارد\n\n"
-            "🔄 **لطفاً لینک دیگری امتحان کنید**",
-            chat_id, msg.message_id, parse_mode="Markdown"
-        )
+        msg = bot.send_message(chat_id, "⏳ **در حال دریافت اطلاعات...**", parse_mode="Markdown")
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            
+            if info:
+                title = clean_filename(info.get("title", "file"))
+                
+                # پیدا کردن فایل
+                filename = None
+                for f in os.listdir(DOWNLOAD_PATH):
+                    if title in f:
+                        filename = os.path.join(DOWNLOAD_PATH, f)
+                        break
+                
+                if not filename:
+                    files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
+                    if files:
+                        filename = os.path.join(DOWNLOAD_PATH, files[-1])
+                
+                if filename and os.path.exists(filename):
+                    size = os.path.getsize(filename)
+                    
+                    if size <= MAX_FILE_SIZE:
+                        bot.edit_message_text("📤 **در حال آپلود...**", chat_id, msg.message_id, parse_mode="Markdown")
+                        
+                        with open(filename, "rb") as f:
+                            if filename.endswith((".mp4", ".mkv", ".webm")):
+                                bot.send_video(chat_id, f, caption=f"✅ **{title}**")
+                            elif filename.endswith((".mp3", ".m4a")):
+                                bot.send_audio(chat_id, f, caption=f"✅ **{title}**")
+                            elif filename.endswith((".jpg", ".jpeg", ".png", ".gif")):
+                                bot.send_photo(chat_id, f, caption=f"✅ **{title}**")
+                            else:
+                                bot.send_document(chat_id, f, caption=f"✅ **{title}**")
+                        
+                        db.add_download(user_id, chat_id, url, "general", size, 
+                                      "group" if is_group else "private", "Other")
+                        os.remove(filename)
+                        bot.delete_message(chat_id, msg.message_id)
+                        return True
         
         return False
+        
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
+        return False
+
+# ================= تابع دانلود اصلی =================
+def download_media(url, chat_id, user_id, is_group=False):
+    try:
+        platform = detect_platform(url)
+        
+        # انتخاب تابع مناسب بر اساس پلتفرم
+        if platform == "Pinterest":
+            return download_pinterest(url, chat_id, user_id, is_group)
+        elif platform == "Tiktok":
+            return download_tiktok(url, chat_id, user_id, is_group)
+        elif platform == "Instagram":
+            return download_instagram(url, chat_id, user_id, is_group)
+        else:
+            return download_general(url, chat_id, user_id, is_group)
         
     except Exception as e:
         bot.send_message(chat_id, f"❌ **خطای سیستمی:**\n`{str(e)[:200]}`", parse_mode="Markdown")
         return False
 
-# ================= پنل ادمین کامل =================
+# ================= پنل ادمین =================
 @bot.message_handler(commands=['admin'])
 def admin_command(message):
     if message.from_user.id != ADMIN_ID:
@@ -687,12 +877,9 @@ def admin_command(message):
     )
     
     bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
-    print(f"✅ پنل ادمین برای کاربر {ADMIN_ID} ارسال شد")
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
 def admin_callback(call):
-    print(f"کالبک دریافت شد: {call.data}")
-    
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
         return
