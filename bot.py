@@ -189,6 +189,18 @@ class Database:
         self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?",(user_id,))
         self.conn.commit()
 
+    # بررسی عضویت در کانال‌ها
+    def check_membership(self,user_id):
+        try:
+            for username, _ in REQUIRED_CHANNELS:
+                member = bot.get_chat_member(username, user_id)
+                if member.status not in ['member','administrator','creator']:
+                    return False
+            return True
+        except Exception as e:
+            print(f"خطا در بررسی عضویت: {e}")
+            return False
+
     # آمار
     def get_stats(self):
         today=datetime.now().strftime('%Y-%m-%d')
@@ -203,12 +215,12 @@ class Database:
         self.cursor.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1")
         blocked=self.cursor.fetchone()[0]
         return {
-            "total_users":total_users,
+            "total_users":total_users or 0,
             "total_downloads":total_downloads or 0,
-            "total_groups":total_groups,
-            "active_today":active_today,
-            "active_groups":active_groups,
-            "blocked":blocked,
+            "total_groups":total_groups or 0,
+            "active_today":active_today or 0,
+            "active_groups":active_groups or 0,
+            "blocked":blocked or 0,
             "bot_status":self.get_setting("bot_status"),
             "group_mode":self.get_setting("group_mode"),
             "private_mode":self.get_setting("private_mode")
@@ -241,10 +253,10 @@ app=Flask(__name__)
 
 # ================= تابع بررسی عضویت با دکمه =================
 def force_join_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
+    markup = InlineKeyboardMarkup(row_width=1)
     for name, link in REQUIRED_CHANNELS:
         markup.add(InlineKeyboardButton(f"📢 عضویت در {name}", url=link))
-    markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
+    markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
 # ================= دانلود (رفع خطای ffmpeg) =================
@@ -300,11 +312,11 @@ def download_video(url,chat_id,user_id,is_group=False):
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
-
+    
     # بررسی عضویت اجباری با دکمه
     if not db.check_membership(message.from_user.id):
-        bot.send_message(
-            message.chat.id,
+        bot.reply_to(
+            message,
             "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
             reply_markup=force_join_markup(),
             parse_mode="Markdown"
@@ -319,7 +331,7 @@ def start(message):
         "✅ می‌تونی هر چیزی که میخوای دانلود کنی: ویدیو، آهنگ، عکس، فایل‌ها و ...\n\n"
         "📌 فقط کافیه لینک رو برای من بفرستی و من دانلود و برات ارسال می‌کنم."
     )
-    bot.send_message(message.chat.id, welcome_text)
+    bot.reply_to(message, welcome_text)
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join_callback(call):
@@ -365,7 +377,7 @@ def admin_panel(message):
     text+="\nآخرین گروه‌ها:\n"
     for g in groups:
         text+=f"{g[0]} | {g[1]} | {'فعال' if g[4] else 'غیرفعال'}\n"
-    bot.send_message(message.chat.id,text,reply_markup=markup)
+    bot.reply_to(message,text,reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data in ["on","off"])
 def toggle_callback(call):
@@ -377,8 +389,16 @@ def toggle_callback(call):
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
-    if db.get_setting("bot_status")=="OFF": return
-    if db.is_blocked(message.from_user.id): return
+    # اگه پیام دستور نیست و لینک نداره، بیخیال
+    if not message.text.startswith(('http://', 'https://')):
+        return
+        
+    if db.get_setting("bot_status")=="OFF": 
+        bot.reply_to(message, "⛔ ربات خاموش است")
+        return
+    if db.is_blocked(message.from_user.id): 
+        bot.reply_to(message, "⛔ شما بلاک هستید")
+        return
 
     db.add_user(message.from_user.id,message.from_user.username,message.from_user.first_name)
     if message.chat.type in ["group","supergroup"]:
@@ -386,8 +406,8 @@ def handle_message(message):
 
     # بررسی عضویت اجباری با دکمه
     if not db.check_membership(message.from_user.id):
-        bot.send_message(
-            message.chat.id,
+        bot.reply_to(
+            message,
             "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
             reply_markup=force_join_markup(),
             parse_mode="Markdown"
@@ -455,7 +475,7 @@ th{background:#667eea;color:#fff;}
 {% for d in downloads %}
 <tr>
 <td>{{ d[0] }}</td>
-<td>{{ d[1] }}</td>
+<td>{{ d[1][:50] }}...</td>
 <td>{{ d[2] }}</td>
 <td>{{ d[3][:16] }}</td>
 </tr>
@@ -501,8 +521,10 @@ def webhook():
 
 # ================= اجرا =================
 if __name__ == "__main__":
+    # تنظیم Webhook
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
+    print(f"🌐 Webhook: {WEBHOOK_URL}")
     app.run(host="0.0.0.0", port=PORT)
