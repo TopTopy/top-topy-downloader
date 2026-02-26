@@ -260,7 +260,7 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود با پشتیبانی کامل =================
+# ================= تابع دانلود با پشتیبانی کامل از Pinterest =================
 def download_video(url, chat_id, user_id, is_group=False):
     try:
         platform = detect_platform(url)
@@ -274,19 +274,39 @@ def download_video(url, chat_id, user_id, is_group=False):
             "ignoreerrors": True,
         }
 
-        # تشخیص و مدیریت خطاهای Pinterest
+        # ========== پشتیبانی ویژه از Pinterest ==========
         if platform == "Pinterest" or "pinterest" in url.lower():
-            bot.send_message(chat_id, "🖼️ در حال دریافت از Pinterest...")
+            bot.send_message(chat_id, "🖼️ **در حال دریافت از Pinterest...**", parse_mode="Markdown")
+            
+            # تنظیمات مخصوص Pinterest
             ydl_opts.update({
                 "format": "best",
                 "extract_flat": False,
-                "force_generic_extractor": False,
+                "force_generic_extractor": True,
+                "socket_timeout": 30,
+                "retries": 3,
             })
-            # Pinterest گاهی نیاز به user-agent داره
+            
+            # هدرهای شبیه مرورگر واقعی
             ydl_opts["headers"] = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+                "Referer": "https://www.pinterest.com/",
+                "DNT": "1",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+            
+            # extractor args مخصوص Pinterest
+            ydl_opts["extractor_args"] = {
+                "pinterest": {
+                    "skip": ["comments"],
+                    "download": "all"
+                }
             }
 
+        # ========== تنظیمات برای صوتی ==========
         elif is_audio:
             ydl_opts.update({
                 "format": "bestaudio/best",
@@ -296,116 +316,120 @@ def download_video(url, chat_id, user_id, is_group=False):
                     "preferredquality": "192",
                 }],
             })
+            
+        # ========== تنظیمات برای ویدیو ==========
         else:
             ydl_opts["format"] = "best[filesize<300M]/best"
 
-        msg = bot.send_message(chat_id, f"⏳ در حال دریافت از {platform} ...")
+        msg = bot.send_message(chat_id, f"⏳ **در حال دریافت از {platform} ...**", parse_mode="Markdown")
 
-        # مرحله 1: ابتدا اطلاعات رو بگیر (بدون دانلود)
+        # ========== مرحله 1: دریافت اطلاعات ==========
+        info = None
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # اول بدون دانلود اطلاعات رو بگیر
                 info_dict = ydl.extract_info(url, download=False)
-
-                # اگر Pinterest بود و فرمت خاصی نداشت
+                
+                # اگه Pinterest بود و فرمت خاصی داشت
                 if platform == "Pinterest" and info_dict:
-                    available_formats = info_dict.get('formats', [])
-                    if available_formats:
+                    # بررسی انواع فرمت‌های موجود
+                    if info_dict.get('entries'):
+                        # اگه آلبوم عکس باشه
+                        bot.edit_message_text(f"📸 **آلبوم عکس پیدا شد...**", chat_id, msg.message_id, parse_mode="Markdown")
+                    elif info_dict.get('formats'):
                         # بهترین فرمت موجود رو انتخاب کن
-                        ydl_opts['format'] = available_formats[-1]['format_id']
-                        bot.edit_message_text(f"✅ فرمت مناسب پیدا شد", chat_id, msg.message_id)
+                        formats = info_dict.get('formats', [])
+                        if formats:
+                            best_format = formats[-1]  # آخرین فرمت معمولا بهترینه
+                            ydl_opts['format'] = best_format['format_id']
+                            bot.edit_message_text(f"✅ **فرمت مناسب پیدا شد**", chat_id, msg.message_id, parse_mode="Markdown")
+                
+                # حالا دانلود کن
+                info = ydl.extract_info(url, download=True)
+                
         except Exception as e:
-            bot.edit_message_text(f"⚠️ در حال تلاش مجدد...", chat_id, msg.message_id)
-            time.sleep(1)
-
-        # مرحله 2: دانلود نهایی
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+            bot.edit_message_text(f"⚠️ **تلاش با روش جایگزین...**", chat_id, msg.message_id, parse_mode="Markdown")
+            
+            # روش جایگزین برای Pinterest
+            if platform == "Pinterest":
+                try:
+                    fallback_opts = {
+                        "quiet": True,
+                        "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
+                        "format": "best",
+                        "force_generic_extractor": True,
+                    }
+                    with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                except:
+                    pass
 
         if not info:
-            bot.edit_message_text("❌ خطا در دریافت اطلاعات", chat_id, msg.message_id)
+            bot.edit_message_text("❌ **خطا در دریافت اطلاعات**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
+        # ========== دریافت عنوان فایل ==========
         title = clean_filename(info.get("title", "file"))
+        
+        # اگه عنوان خالی بود، از آدرس استفاده کن
+        if not title or title == "file":
+            title = clean_filename(url.split('/')[-1][:50])
 
-        # پیدا کردن فایل
+        # ========== پیدا کردن فایل ==========
         filename = None
         for f in os.listdir(DOWNLOAD_PATH):
             if title in f:
                 filename = os.path.join(DOWNLOAD_PATH, f)
                 break
 
+        # اگه پیدا نشد، آخرین فایل اضافه شده رو بگیر
         if not filename or not os.path.exists(filename):
-            # اگه پیدا نشد، آخرین فایل اضافه شده رو بگیر
             files = sorted(os.listdir(DOWNLOAD_PATH), key=lambda x: os.path.getctime(os.path.join(DOWNLOAD_PATH, x)))
             if files:
                 filename = os.path.join(DOWNLOAD_PATH, files[-1])
 
         if not filename or not os.path.exists(filename):
-            bot.edit_message_text("❌ فایل پیدا نشد", chat_id, msg.message_id)
+            bot.edit_message_text("❌ **فایل پیدا نشد**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
+        # ========== بررسی حجم ==========
         size = os.path.getsize(filename)
         if size > MAX_FILE_SIZE:
             os.remove(filename)
-            bot.edit_message_text("❌ حجم فایل بیشتر از ۳۰۰MB", chat_id, msg.message_id)
+            bot.edit_message_text("❌ **حجم فایل بیشتر از ۳۰۰MB**", chat_id, msg.message_id, parse_mode="Markdown")
             return
 
-        bot.edit_message_text("📤 در حال آپلود ...", chat_id, msg.message_id)
+        # ========== آپلود فایل ==========
+        bot.edit_message_text("📤 **در حال آپلود ...**", chat_id, msg.message_id, parse_mode="Markdown")
 
         with open(filename, "rb") as f:
             if filename.endswith((".mp4", ".mkv", ".webm")):
-                bot.send_video(chat_id, f, caption=f"✅ {title}")
+                bot.send_video(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "video"
             elif filename.endswith(".mp3"):
-                bot.send_audio(chat_id, f, caption=f"✅ {title}")
+                bot.send_audio(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "audio"
-            elif filename.endswith((".jpg", ".jpeg", ".png", ".gif")):
-                bot.send_photo(chat_id, f, caption=f"✅ {title}")
+            elif filename.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")):
+                bot.send_photo(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "photo"
             else:
-                bot.send_document(chat_id, f, caption=f"✅ {title}")
+                bot.send_document(chat_id, f, caption=f"✅ **{title}**", parse_mode="Markdown")
                 format_type = "file"
 
+        # ========== ذخیره آمار ==========
         source = "group" if is_group else "private"
         db.add_download(user_id, chat_id, url, format_type, size, source, platform)
 
+        # پاک کردن فایل
         os.remove(filename)
         bot.delete_message(chat_id, msg.message_id)
 
     except yt_dlp.utils.DownloadError as e:
         error_text = str(e)
-        if "Requested format is not available" in error_text:
-            bot.send_message(chat_id, "🔄 در حال تلاش با فرمت مناسب‌تر...")
-            # تلاش مجدد با تنظیمات ساده‌تر
-            try:
-                simple_opts = {
-                    "quiet": True,
-                    "outtmpl": f"{DOWNLOAD_PATH}/%(title)s.%(ext)s",
-                    "format": "best",
-                }
-                with yt_dlp.YoutubeDL(simple_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-                    # ادامه پروسه دانلود...
-                    if info:
-                        title = clean_filename(info.get("title", "file"))
-                        filename = None
-                        for f in os.listdir(DOWNLOAD_PATH):
-                            if title in f:
-                                filename = os.path.join(DOWNLOAD_PATH, f)
-                                break
-                        if filename and os.path.exists(filename):
-                            size = os.path.getsize(filename)
-                            with open(filename, "rb") as f:
-                                bot.send_document(chat_id, f, caption=f"✅ {title}")
-                            db.add_download(user_id, chat_id, url, "file", size, source, platform)
-                            os.remove(filename)
-            except:
-                bot.send_message(chat_id, "❌ متأسفانه این پست Pinterest قابل دانلود نیست")
-        else:
-            bot.send_message(chat_id, f"❌ خطا در دانلود:\n{error_text[:200]}")
+        bot.send_message(chat_id, f"❌ **خطای Pinterest:**\n`{error_text[:200]}`", parse_mode="Markdown")
 
     except Exception as e:
-        bot.send_message(chat_id, f"❌ خطا:\n{str(e)[:200]}")
+        bot.send_message(chat_id, f"❌ **خطا:**\n`{str(e)[:200]}`", parse_mode="Markdown")
 
 # ================= تلگرام =================
 @bot.message_handler(commands=['start'])
@@ -632,4 +656,5 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     print("🚀 ربات 𝘁𝗼𝗽 𝘁𝗼𝗽𝘆 𝗱𝗼𝘄𝗻𝗹𝗼𝗮𝗱𝗲𝗿 آماده است")
     print(f"🌐 Webhook: {WEBHOOK_URL}")
+    print(f"✅ پشتیبانی از Pinterest فعال شد")
     app.run(host="0.0.0.0", port=PORT)
