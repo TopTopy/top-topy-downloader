@@ -5,6 +5,7 @@ import time
 import re
 import subprocess
 import json
+import random
 from datetime import datetime
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -26,29 +27,52 @@ REQUIRED_CHANNELS = [
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
-# ================= User-Agent های مختلف =================
+# ================= لیست User-Agent های به‌روز =================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
     "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
 ]
 
-# ================= بررسی نصب yt-dlp =================
-def check_yt_dlp():
+# ================= بررسی نصب و به‌روزرسانی yt-dlp =================
+def check_and_update_yt_dlp():
     try:
+        # بررسی نسخه فعلی
         result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
         if result.returncode == 0:
-            print(f"✅ yt-dlp نسخه {result.stdout.strip()} نصب است")
+            current_version = result.stdout.strip()
+            print(f"✅ yt-dlp نسخه {current_version} نصب است")
+            
+            # تلاش برای به‌روزرسانی
+            try:
+                update_result = subprocess.run(['pip', 'install', '--upgrade', 'yt-dlp'], 
+                                              capture_output=True, text=True)
+                if update_result.returncode == 0:
+                    print("✅ yt-dlp با موفقیت به‌روزرسانی شد")
+                else:
+                    print("⚠️ خطا در به‌روزرسانی yt-dlp")
+            except:
+                print("⚠️ نمی‌توان yt-dlp را به‌روزرسانی کرد")
+            
             return True
         else:
             print("❌ yt-dlp نصب نیست")
-            return False
+            # تلاش برای نصب
+            try:
+                subprocess.run(['pip', 'install', 'yt-dlp'], check=True)
+                print("✅ yt-dlp نصب شد")
+                return True
+            except:
+                print("❌ خطا در نصب yt-dlp")
+                return False
     except:
-        print("❌ yt-dlp نصب نیست")
+        print("❌ خطا در بررسی yt-dlp")
         return False
 
-YT_DLP_OK = check_yt_dlp()
+YT_DLP_OK = check_and_update_yt_dlp()
 
 # ================= ابزار قوی برای استخراج لینک =================
 def extract_urls(text):
@@ -71,70 +95,121 @@ def is_youtube_url(url):
 
 def clean_url(url):
     """پاکسازی و نرمال‌سازی لینک"""
-    url = re.sub(r'&si=[^&]+', '', url)
+    # حذف پارامترهای ردیابی
     url = re.sub(r'\?si=[^&]+', '', url)
+    url = re.sub(r'&si=[^&]+', '', url)
     return url
 
-# ================= دانلودر قدرتمند =================
-class YouTubeDownloader:
+def format_duration(seconds):
+    """تبدیل ثانیه به فرمت ساعت:دقیقه:ثانیه"""
+    minutes = seconds // 60
+    hours = minutes // 60
+    if hours > 0:
+        return f"{hours}:{minutes%60:02d}:{seconds%60:02d}"
+    else:
+        return f"{minutes}:{seconds%60:02d}"
+
+# ================= موتور دانلود پیشرفته =================
+class AdvancedYouTubeDownloader:
     def __init__(self):
-        pass
-    
+        self.session = None
+        
     def get_video_info(self, url):
-        """گرفتن اطلاعات ویدیو با ۳ روش مختلف (نسخه بهینه‌شده)"""
+        """گرفتن اطلاعات ویدیو با ۵ روش مختلف برای عبور از بلاک"""
         
         # روش‌های مختلف برای دریافت اطلاعات
         methods = [
-            # روش 1: معمولی با User-Agent قوی
-            [
-                'yt-dlp',
-                '--dump-json',
-                '--no-playlist',
-                '--quiet',
-                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                url
-            ],
+            # روش 1: معمولی با User-Agent ویندوز
+            {
+                'name': 'روش معمولی',
+                'cmd': [
+                    'yt-dlp',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--quiet',
+                    '--user-agent', USER_AGENTS[0],
+                    url
+                ]
+            },
             # روش 2: با کلاینت اندروید (مخصوص Shorts)
-            [
-                'yt-dlp',
-                '--extractor-args', 'youtube:player_client=android_embedded',
-                '--dump-json',
-                '--no-playlist',
-                '--quiet',
-                '--user-agent', 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
-                url
-            ],
-            # روش 3: با عبور از محدودیت جغرافیایی
-            [
-                'yt-dlp',
-                '--geo-bypass',
-                '--geo-bypass-country', 'US',
-                '--dump-json',
-                '--no-playlist',
-                '--quiet',
-                url
-            ]
+            {
+                'name': 'روش اندروید',
+                'cmd': [
+                    'yt-dlp',
+                    '--extractor-args', 'youtube:player_client=android_embedded',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--quiet',
+                    '--user-agent', USER_AGENTS[4],
+                    url
+                ]
+            },
+            # روش 3: با کلاینت iOS
+            {
+                'name': 'روش iOS',
+                'cmd': [
+                    'yt-dlp',
+                    '--extractor-args', 'youtube:player_client=ios',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--quiet',
+                    '--user-agent', USER_AGENTS[3],
+                    url
+                ]
+            },
+            # روش 4: با عبور از محدودیت جغرافیایی
+            {
+                'name': 'روش عبور از تحریم',
+                'cmd': [
+                    'yt-dlp',
+                    '--geo-bypass',
+                    '--geo-bypass-country', 'US',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--quiet',
+                    '--user-agent', USER_AGENTS[1],
+                    url
+                ]
+            },
+            # روش 5: با کوکی (اگر وجود داشته باشد)
+            {
+                'name': 'روش کوکی',
+                'cmd': [
+                    'yt-dlp',
+                    '--cookies', 'cookies.txt' if os.path.exists('cookies.txt') else '/dev/null',
+                    '--dump-json',
+                    '--no-playlist',
+                    '--quiet',
+                    '--user-agent', USER_AGENTS[2],
+                    url
+                ]
+            }
         ]
         
-        for i, cmd in enumerate(methods):
+        for i, method in enumerate(methods, 1):
             try:
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if result.returncode == 0:
+                print(f"تلاش روش {i}: {method['name']}")
+                result = subprocess.run(method['cmd'], capture_output=True, text=True, timeout=30)
+                
+                if result.returncode == 0 and result.stdout:
                     info = json.loads(result.stdout)
                     return {
                         'title': info.get('title', 'بدون عنوان'),
                         'duration': info.get('duration', 0),
                         'uploader': info.get('uploader', 'ناشناس'),
                         'views': info.get('view_count', 0),
-                        'success_method': i+1
+                        'success_method': method['name']
                     }
-            except:
+                else:
+                    print(f"خطا در روش {i}: {result.stderr[:100]}")
+            except Exception as e:
+                print(f"استثنا در روش {i}: {e}")
                 continue
         
         return None
     
     def download_video(self, url, quality, chat_id, msg_id):
-        """دانلود ویدیو"""
+        """دانلود ویدیو با ۸ روش مختلف"""
         
         # تنظیم فرمت بر اساس کیفیت
         format_map = {
@@ -148,39 +223,150 @@ class YouTubeDownloader:
         
         output_template = f'{DOWNLOAD_PATH}/%(title)s_%(id)s.%(ext)s'
         
-        # ساخت دستور پایه
-        base_cmd = [
-            'yt-dlp',
-            '-f', format_option,
-            '-o', output_template,
-            '--no-playlist',
-            '--no-warnings',
-            '--progress',
-            '--newline',
+        # ۸ روش مختلف برای دانلود
+        download_methods = [
+            {
+                'name': 'معمولی',
+                'cmd': [
+                    'yt-dlp',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[0],
+                    url
+                ]
+            },
+            {
+                'name': 'اندروید',
+                'cmd': [
+                    'yt-dlp',
+                    '--extractor-args', 'youtube:player_client=android_embedded',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[4],
+                    url
+                ]
+            },
+            {
+                'name': 'iOS',
+                'cmd': [
+                    'yt-dlp',
+                    '--extractor-args', 'youtube:player_client=ios',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[3],
+                    url
+                ]
+            },
+            {
+                'name': 'عبور از تحریم',
+                'cmd': [
+                    'yt-dlp',
+                    '--geo-bypass',
+                    '--geo-bypass-country', 'US',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[1],
+                    url
+                ]
+            },
+            {
+                'name': 'کیفیت تطبیقی',
+                'cmd': [
+                    'yt-dlp',
+                    '-f', 'best[ext=mp4]/worst[ext=mp4]',
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[2],
+                    url
+                ]
+            },
+            {
+                'name': 'تلاش مجدد',
+                'cmd': [
+                    'yt-dlp',
+                    '--retries', '10',
+                    '--fragment-retries', '10',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[0],
+                    url
+                ]
+            },
+            {
+                'name': 'کوکی',
+                'cmd': [
+                    'yt-dlp',
+                    '--cookies', 'cookies.txt' if os.path.exists('cookies.txt') else '/dev/null',
+                    '-f', format_option,
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[5],
+                    url
+                ]
+            },
+            {
+                'name': 'آخرین راهکار',
+                'cmd': [
+                    'yt-dlp',
+                    '--ignore-errors',
+                    '--no-check-certificate',
+                    '--prefer-insecure',
+                    '-f', 'worst',
+                    '-o', output_template,
+                    '--no-playlist',
+                    '--no-warnings',
+                    '--progress',
+                    '--newline',
+                    '--user-agent', USER_AGENTS[2],
+                    url
+                ]
+            }
         ]
         
-        # اگر کیفیت صوتی هست
+        # اگر کیفیت صوتی هست، گزینه‌های اضافه کن
         if quality == 'audio':
-            base_cmd.extend(['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0'])
+            for method in download_methods:
+                method['cmd'].extend(['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0'])
         
-        # ۵ روش مختلف برای دانلود
-        methods = [
-            {'name': 'معمولی', 'cmd': base_cmd + ['--user-agent', USER_AGENTS[0], url]},
-            {'name': 'موبایل', 'cmd': base_cmd + ['--user-agent', USER_AGENTS[2], '--extractor-args', 'youtube:player_client=android_embedded', url]},
-            {'name': 'عبور از تحریم', 'cmd': base_cmd + ['--geo-bypass', '--geo-bypass-country', 'US', url]},
-            {'name': 'مخصوص Shorts', 'cmd': base_cmd + ['--user-agent', USER_AGENTS[3], '--extractor-args', 'youtube:player_client=android_embedded', url.replace('shorts/', 'watch?v=')]},
-            {'name': 'تلاش مجدد', 'cmd': base_cmd + ['--retries', '10', '--fragment-retries', '10', url]}
-        ]
-        
-        for i, method in enumerate(methods, 1):
+        # امتحان همه روش‌ها
+        for i, method in enumerate(download_methods, 1):
             try:
                 if msg_id:
-                    bot.edit_message_text(
-                        f"🔄 **روش {i}/5**\n📡 {method['name']}...",
-                        chat_id,
-                        msg_id,
-                        parse_mode="Markdown"
-                    )
+                    try:
+                        bot.edit_message_text(
+                            f"🔄 **روش {i}/8**\n📡 {method['name']}...",
+                            chat_id,
+                            msg_id,
+                            parse_mode="Markdown"
+                        )
+                    except:
+                        pass
                 
                 process = subprocess.Popen(
                     method['cmd'], 
@@ -190,18 +376,23 @@ class YouTubeDownloader:
                     bufsize=1
                 )
                 
+                last_percent = 0
                 for line in process.stdout:
-                    if '%' in line and msg_id:
-                        percent_match = re.search(r'(\d+\.\d+)%', line)
-                        if percent_match:
-                            percent = float(percent_match.group(1))
-                            if percent % 10 < 1:  # هر ۱۰٪ آپدیت کن
-                                bot.edit_message_text(
-                                    f"📥 **{method['name']}**\n⏳ {percent:.1f}%",
-                                    chat_id,
-                                    msg_id,
-                                    parse_mode="Markdown"
-                                )
+                    percent_match = re.search(r'(\d+\.\d+)%', line)
+                    if percent_match:
+                        percent = float(percent_match.group(1))
+                        if percent - last_percent >= 5:  # هر ۵٪ آپدیت کن
+                            last_percent = percent
+                            if msg_id:
+                                try:
+                                    bot.edit_message_text(
+                                        f"📥 **{method['name']}**\n⏳ {percent:.1f}%",
+                                        chat_id,
+                                        msg_id,
+                                        parse_mode="Markdown"
+                                    )
+                                except:
+                                    pass
                 
                 process.wait()
                 
@@ -216,7 +407,6 @@ class YouTubeDownloader:
                         return {
                             'filename': latest_file,
                             'size': os.path.getsize(latest_file),
-                            'quality': quality,
                             'method': method['name']
                         }
                 
@@ -226,8 +416,8 @@ class YouTubeDownloader:
         
         return None
 
-# ================= ایجاد نمونه =================
-downloader = YouTubeDownloader()
+# ================= ایجاد نمونه از دانلودر =================
+downloader = AdvancedYouTubeDownloader()
 
 # ================= دیتابیس =================
 class Database:
@@ -293,14 +483,6 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
     return markup
 
-def format_duration(seconds):
-    minutes = seconds // 60
-    hours = minutes // 60
-    if hours > 0:
-        return f"{hours}:{minutes%60:02d}:{seconds%60:02d}"
-    else:
-        return f"{minutes}:{seconds%60:02d}"
-
 # ================= کیبورد انتخاب کیفیت =================
 def quality_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
@@ -331,9 +513,10 @@ def start(message):
     welcome_text = (
         f"🎬 **سلام {message.from_user.first_name or message.from_user.username}!**\n\n"
         "به **ربات دانلود یوتیوب** خوش اومدی 🤖\n\n"
-        "✅ **قابلیت‌ها:**\n"
-        "• دانلود با ۵ روش مختلف\n"
-        "• پشتیبانی از Shorts\n"
+        "✅ **قابلیت‌های ویژه:**\n"
+        "• دانلود با ۸ روش مختلف\n"
+        "• پشتیبانی از ویدیوهای Shorts\n"
+        "• عبور از بلاک یوتیوب\n"
         "• نمایش پیشرفت دانلود\n"
         "• کیفیت‌های مختلف\n\n"
         "📌 **فقط کافیه لینک یوتیوب رو بفرستی!**"
@@ -357,7 +540,7 @@ def quality_callback(call):
     
     quality = call.data.replace('quality_', '')
     
-    # استخراج لینک با روش قوی‌تر
+    # استخراج لینک از متن پیام
     text = call.message.text
     urls = extract_urls(text)
     
@@ -373,7 +556,7 @@ def quality_callback(call):
     url = clean_url(urls[0])
     
     bot.edit_message_text(
-        f"🔄 **در حال آماده‌سازی ۵ روش دانلود...**",
+        f"🔄 **در حال آماده‌سازی ۸ روش دانلود...**",
         call.message.chat.id,
         call.message.message_id,
         parse_mode="Markdown"
@@ -390,6 +573,7 @@ def process_download(url, quality, chat_id, user_id, msg_id):
         result = downloader.download_video(url, quality, chat_id, msg_id)
         
         if result:
+            # بررسی حجم فایل
             if result['size'] > MAX_FILE_SIZE:
                 os.remove(result['filename'])
                 bot.edit_message_text(
@@ -400,6 +584,7 @@ def process_download(url, quality, chat_id, user_id, msg_id):
                 )
                 return
             
+            # ارسال فایل
             with open(result['filename'], 'rb') as f:
                 if quality == 'audio' or result['filename'].endswith('.mp3'):
                     bot.send_audio(
@@ -416,9 +601,13 @@ def process_download(url, quality, chat_id, user_id, msg_id):
                         timeout=180
                     )
             
+            # پاک کردن فایل
             os.remove(result['filename'])
+            
+            # آپدیت دیتابیس
             db.add_download(user_id)
             
+            # ویرایش پیام
             bot.edit_message_text(
                 f"✅ **دانلود با موفقیت انجام شد!**",
                 chat_id,
@@ -427,7 +616,7 @@ def process_download(url, quality, chat_id, user_id, msg_id):
             )
         else:
             bot.edit_message_text(
-                "❌ **خطا در دانلود!**\nهمه روش‌ها امتحان شدند اما موفق نبود.",
+                "❌ **خطا در دانلود!**\nهمه ۸ روش امتحان شدند اما موفق نبود.\nلطفاً چند دقیقه بعد دوباره تلاش کنید.",
                 chat_id,
                 msg_id,
                 parse_mode="Markdown"
@@ -460,7 +649,7 @@ def handle_message(message):
         )
         return
 
-    # استخراج لینک با روش قوی
+    # استخراج لینک
     urls = extract_urls(message.text)
     if not urls:
         return
@@ -478,13 +667,13 @@ def handle_message(message):
     if not YT_DLP_OK:
         bot.reply_to(
             message,
-            "❌ **yt-dlp روی سرور نصب نیست!**",
+            "❌ **مشکل در نصب yt-dlp!**\nلطفاً به ادمین اطلاع دهید.",
             parse_mode="Markdown"
         )
         return
     
     # دریافت اطلاعات ویدیو
-    info_msg = bot.reply_to(message, "🔄 **در حال دریافت اطلاعات...**", parse_mode="Markdown")
+    info_msg = bot.reply_to(message, "🔄 **در حال دریافت اطلاعات با ۵ روش مختلف...**", parse_mode="Markdown")
     
     info = downloader.get_video_info(url)
     
@@ -494,7 +683,8 @@ def handle_message(message):
             f"📌 عنوان: `{info['title'][:50]}...`\n"
             f"⏱ مدت: {format_duration(info['duration'])}\n"
             f"👤 کانال: {info['uploader']}\n"
-            f"👁 بازدید: {info['views']:,}\n\n"
+            f"👁 بازدید: {info['views']:,}\n"
+            f"✅ دریافت با: {info['success_method']}\n\n"
             f"⬇️ **کیفیت مورد نظر را انتخاب کنید:**"
         )
         
@@ -526,9 +716,19 @@ def admin_panel(message):
     total_users = stats[0] or 0
     total_downloads = stats[1] or 0
     
+    # بررسی نسخه yt-dlp
+    version = "نامشخص"
+    try:
+        ver_result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        if ver_result.returncode == 0:
+            version = ver_result.stdout.strip()
+    except:
+        pass
+    
     text = f"👑 **پنل مدیریت**\n\n"
     text += f"👥 کاربران: {total_users}\n"
     text += f"📥 دانلودها: {total_downloads}\n"
+    text += f"🟢 yt-dlp نسخه: {version}\n"
     text += f"🟢 وضعیت: فعال"
     
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
@@ -545,17 +745,18 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "ربات دانلود یوتیوب"
+    return "ربات دانلود یوتیوب - نسخه نهایی"
 
 # ================= اجرا =================
 if __name__ == "__main__":
-    print("="*60)
-    print("🎬 ربات دانلود یوتیوب")
-    print("="*60)
-    print(f"✅ yt-dlp: {'نصب است' if YT_DLP_OK else 'نصب نیست'}")
-    print("✅ ۵ روش دانلود")
-    print("✅ دریافت اطلاعات با ۳ روش")
-    print("="*60)
+    print("="*70)
+    print("🎬 ربات دانلود یوتیوب - نسخه نهایی با قابلیت عبور از بلاک")
+    print("="*70)
+    print(f"✅ yt-dlp: {'نصب و به‌روز است' if YT_DLP_OK else 'مشکل دارد'}")
+    print("✅ ۵ روش دریافت اطلاعات")
+    print("✅ ۸ روش دانلود")
+    print("✅ پشتیبانی از Shorts")
+    print("="*70)
     
     # پاکسازی فایل‌های قدیمی
     for f in os.listdir(DOWNLOAD_PATH):
@@ -570,7 +771,7 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     
     print(f"✅ Webhook: {WEBHOOK_URL}")
-    print("✅ ربات فعال شد!")
-    print("="*60)
+    print("✅ ربات با موفقیت فعال شد!")
+    print("="*70)
     
     app.run(host="0.0.0.0", port=PORT)
