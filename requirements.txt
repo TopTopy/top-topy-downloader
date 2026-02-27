@@ -23,3 +23,8 @@ yt-dlp>=2024.12.13
 pyTelegramBotAPI==4.20.0
 flask==3.0.3
 gunicorn==21.2.0
+yt-dlp>=2024.12.13
+pyTelegramBotAPI==4.20.0
+flask==3.0.3
+gunicorn==21.2.0
+requests==2.31.0
