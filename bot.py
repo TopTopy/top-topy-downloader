@@ -11,7 +11,7 @@ import yt_dlp
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
-MAX_FILE_SIZE = 300 * 1024 * 1024
+MAX_FILE_SIZE = 300 * 1024 * 1024  # افزایش به 300 مگابایت
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
@@ -22,7 +22,7 @@ REQUIRED_CHANNELS = [
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-bot = telebot.TeleBot(TOKEN, threaded=False)
+bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 user_links = {}
@@ -53,94 +53,64 @@ def force_join_markup():
     markup = InlineKeyboardMarkup(row_width=1)
     for name, link in REQUIRED_CHANNELS:
         markup.add(InlineKeyboardButton(f"📢 عضویت در {name}", url=link))
-    markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
+    markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
     return markup
 
-# ================= دانلود با تشخیص خودکار فرمت =================
-def get_available_formats(url):
-    """دریافت لیست فرمت‌های موجود"""
-    try:
-        ydl_opts = {
-            "quiet": True,
-            "no_warnings": True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            formats = info.get('formats', [])
-            return formats, info
-    except:
-        return [], None
+# ================= دانلود حرفه‌ای =================
+def download_video(url, quality):
 
-def download_video(url, quality, chat_id):
     unique = str(int(time.time()*1000))
     output = f"{DOWNLOAD_PATH}/%(title)s_{unique}.%(ext)s"
 
-    # دریافت فرمت‌های موجود
-    formats, info = get_available_formats(url)
-    
-    # تنظیمات پایه
+    # مهم: fallback format گذاشتیم
+    format_map = {
+        "best": "bestvideo+bestaudio/best",
+        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
+        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
+        "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
+        "audio": "bestaudio"
+    }
+
     ydl_opts = {
+        "format": format_map.get(quality, "best"),
         "outtmpl": output,
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
+        "merge_output_format": "mp4",
         "retries": 5,
-        "fragment_retries": 5
+        "fragment_retries": 5,
     }
 
-    # برای ویدیوهای Shorts یا وقتی فرمت خاص درخواستی موجود نیست
-    if quality == "best":
-        ydl_opts["format"] = "best[ext=mp4]/best"
-    elif quality == "720":
-        ydl_opts["format"] = "best[height<=720][ext=mp4]/best[ext=mp4]/best"
-    elif quality == "480":
-        ydl_opts["format"] = "best[height<=480][ext=mp4]/best[ext=mp4]/best"
-    elif quality == "360":
-        ydl_opts["format"] = "best[height<=360][ext=mp4]/best[ext=mp4]/best"
-    elif quality == "audio":
-        ydl_opts["format"] = "bestaudio/best"
-        ydl_opts["postprocessors"] = [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
-        }]
-
-    # اگر ویدیو Shorts باشه (تشخیص از URL)
-    if 'shorts' in url:
-        # برای Shorts از فرمت مخصوص استفاده کن
-        ydl_opts["format"] = "best[height<=720]"
+    if quality == "audio":
+        ydl_opts.update({
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }]
+        })
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            filename = ydl.prepare_filename(info)
+
+            # گرفتن اسم فایل نهایی درست
+            if "requested_downloads" in info:
+                filename = info["requested_downloads"][0]["filepath"]
+            else:
+                filename = ydl.prepare_filename(info)
 
             if quality == "audio":
                 filename = os.path.splitext(filename)[0] + ".mp3"
 
-            # اگه فایل وجود نداشت، دنبال فایل با پسوند دیگه بگرد
-            if not os.path.exists(filename):
-                for f in os.listdir(DOWNLOAD_PATH):
-                    if unique in f:
-                        return os.path.join(DOWNLOAD_PATH, f)
+            if os.path.exists(filename):
+                return filename
 
-            return filename if os.path.exists(filename) else None
     except Exception as e:
-        print(f"خطا در دانلود: {e}")
-        # تلاش مجدد با فرمت ساده‌تر
-        try:
-            ydl_opts_simple = {
-                "format": "best",
-                "outtmpl": output,
-                "noplaylist": True,
-                "quiet": True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts_simple) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filename = ydl.prepare_filename(info)
-                return filename if os.path.exists(filename) else None
-        except:
-            return None
+        print("Download Error:", e)
+
+    return None
 
 # ================= کیبورد کیفیت =================
 def quality_keyboard():
@@ -173,11 +143,12 @@ def start(message):
         message,
         "🎬 **ربات دانلود یوتیوب**\n\n"
         "✅ لینک یوتیوب رو بفرست تا برات دانلود کنم!\n"
-        "✅ پشتیبانی از Shorts و ویدیوهای معمولی\n"
+        "✅ پشتیبانی از Shorts\n"
         "✅ حجم مجاز: ۳۰۰ مگابایت",
         parse_mode="Markdown"
     )
 
+# ================= پنل ادمین =================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != ADMIN_ID:
@@ -186,6 +157,7 @@ def admin_panel(message):
     
     # بررسی نسخه yt-dlp
     try:
+        import subprocess
         result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
         version = result.stdout.strip() if result.returncode == 0 else "نامشخص"
     except:
@@ -194,7 +166,8 @@ def admin_panel(message):
     text = f"👑 **پنل مدیریت**\n\n"
     text += f"✅ ربات فعال است\n"
     text += f"📊 دانلودهای هم‌زمان: {len(active_downloads)}\n"
-    text += f"📦 yt-dlp نسخه: {version}"
+    text += f"📦 yt-dlp نسخه: {version}\n"
+    text += f"👤 ادمین: {ADMIN_ID}"
     
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -236,7 +209,12 @@ def handle(message):
         return
 
     user_links[user_id] = url
-    bot.reply_to(message, "📥 **کیفیت مورد نظر رو انتخاب کن:**", reply_markup=quality_keyboard(), parse_mode="Markdown")
+    bot.reply_to(
+        message, 
+        "📥 **کیفیت مورد نظر رو انتخاب کن:**", 
+        reply_markup=quality_keyboard(), 
+        parse_mode="Markdown"
+    )
 
 # ================= انتخاب کیفیت =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("q_"))
@@ -266,7 +244,7 @@ def quality_selected(call):
             with lock:
                 active_downloads.add(user_id)
 
-            file_path = download_video(url, quality, chat_id)
+            file_path = download_video(url, quality)
 
             if not file_path or not os.path.exists(file_path):
                 bot.send_message(chat_id, "❌ خطا در دانلود! لطفاً دوباره تلاش کنید.")
@@ -332,10 +310,9 @@ def webhook():
 def home():
     return "ربات دانلود یوتیوب فعال است"
 
-# ================= اجرا =================
 if __name__ == "__main__":
     print("="*60)
-    print("🎬 ربات دانلود یوتیوب - نسخه نهایی")
+    print("🎬 ربات دانلود یوتیوب")
     print("="*60)
     print(f"✅ توکن: {TOKEN[:10]}...")
     print(f"✅ ادمین: {ADMIN_ID}")
