@@ -8,3 +8,5 @@ idna==3.6
 chardet==5.2.0
 python-dotenv==1.0.1
 curl_cffi>=0.13.0
+instaloader
+telebot
