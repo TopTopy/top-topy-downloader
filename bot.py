@@ -3,18 +3,53 @@ import os
 import threading
 import time
 import re
-import random
-import json
 import subprocess
+import json
+import random
 from datetime import datetime
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
-import yt_dlp
 import sqlite3
-import requests
-from urllib.parse import urlparse, urljoin
 from flask import Flask, request
-import instaloader
+
+# ================= نصب همه کتابخانه‌های دانلود =================
+# pip install yt-dlp pytubefix youtube-dl pafy google-api-python-client
+
+try:
+    import yt_dlp
+    YT_DLP_AVAILABLE = True
+except:
+    YT_DLP_AVAILABLE = False
+    print("⚠️ yt-dlp نصب نیست")
+
+try:
+    from pytubefix import YouTube
+    from pytubefix.cli import on_progress
+    PYTUBEFIX_AVAILABLE = True
+except:
+    PYTUBEFIX_AVAILABLE = False
+    print("⚠️ pytubefix نصب نیست")
+
+try:
+    import youtube_dl
+    YOUTUBE_DL_AVAILABLE = True
+except:
+    YOUTUBE_DL_AVAILABLE = False
+    print("⚠️ youtube-dl نصب نیست")
+
+try:
+    import pafy
+    PAFY_AVAILABLE = True
+except:
+    PAFY_AVAILABLE = False
+    print("⚠️ pafy نصب نیست")
+
+try:
+    from googleapiclient.discovery import build
+    YOUTUBE_API_AVAILABLE = True
+except:
+    YOUTUBE_API_AVAILABLE = False
+    print("⚠️ google-api-python-client نصب نیست")
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
@@ -28,379 +63,331 @@ REQUIRED_CHANNELS = [
     ("@IdTOP_TOPY", "https://t.me/IdTOP_TOPY")
 ]
 
+# API Key یوتیوب (اختیاری - برای روش API)
+YOUTUBE_API_KEY = "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAA"  # اینو از Google Cloud Console بگیر
+
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
-# ================= بررسی نصب بودن ffmpeg =================
-def check_dependencies():
-    try:
-        subprocess.run(["ffmpeg", "-version"], capture_output=True)
-        print("✅ ffmpeg نصب است")
-    except:
-        print("⚠️ ffmpeg نصب نیست - برای دانلود صوتی نیاز است")
-
-check_dependencies()
-
 # ================= ابزار =================
-def clean_filename(name):
-    return re.sub(r'[\\/*?:"<>|]', "", name)
-
 def extract_urls(text):
     return re.findall(r'https?://[^\s]+', text)
 
-def detect_platform(url):
+def is_youtube_url(url):
     url = url.lower()
-    platforms = {
-        'youtube': ['youtube.com', 'youtu.be'],
-        'tiktok': ['tiktok.com', 'vt.tiktok.com'],
-        'instagram': ['instagram.com', 'instagr.am'],
-        'twitter': ['twitter.com', 'x.com'],
-        'facebook': ['facebook.com', 'fb.com', 'fb.watch'],
-        'pinterest': ['pinterest.com', 'pin.it'],
-        'reddit': ['reddit.com'],
-        'twitch': ['twitch.tv'],
-        'vimeo': ['vimeo.com'],
-        'dailymotion': ['dailymotion.com'],
-        'soundcloud': ['soundcloud.com'],
-        'spotify': ['spotify.com'],
-        'aparat': ['aparat.com'],
-        'telewebion': ['telewebion.com'],
-        'filimo': ['filimo.com'],
-        'namasha': ['namasha.com'],
-        'clips': ['clips.ir'],
-        'tamasha': ['tamasha.com'],
-        'threads': ['threads.net'],
-        'linkedin': ['linkedin.com'],
-        'tumblr': ['tumblr.com'],
-        'flickr': ['flickr.com'],
-        'imgur': ['imgur.com'],
-        'giphy': ['giphy.com'],
-        'tenor': ['tenor.com'],
-        '9gag': ['9gag.com'],
-        'bitchute': ['bitchute.com'],
-        'odysee': ['odysee.com'],
-        'rumble': ['rumble.com'],
-        'brighteon': ['brighteon.com'],
-        'lbry': ['lbry.tv'],
-        'minds': ['minds.com'],
-        'gab': ['gab.com'],
-        'gettr': ['gettr.com'],
-        'parler': ['parler.com'],
-        'telegram': ['t.me', 'telegram.me'],
-        'whatsapp': ['whatsapp.com'],
-        'snapchat': ['snapchat.com'],
-        'likee': ['likee.com'],
-        'sharechat': ['sharechat.com'],
-        'moj': ['mojApp'],
-        'chingsari': ['chingsari.com']
-    }
-    
-    for platform, domains in platforms.items():
-        for domain in domains:
-            if domain in url:
-                return platform.capitalize()
-    return "Other"
-
-# ================= تابع تشخیص و دنبال کردن لینک‌های کوتاه =================
-def resolve_short_url(url):
-    try:
-        short_domains = ['pin.it', 'bit.ly', 'tinyurl.com', 'short.link', 't.co', 'youtu.be', 'vt.tiktok.com', 
-                        'rb.gy', 'shorturl.at', 'ow.ly', 'is.gd', 'buff.ly', 'lnkd.in', 'fb.watch', 'instagr.am']
-        parsed = urlparse(url)
-        if any(domain in parsed.netloc for domain in short_domains):
-            response = requests.head(url, allow_redirects=True, timeout=10, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            })
-            return response.url
-        return url
-    except Exception as e:
-        print(f"خطا در تشخیص لینک کوتاه: {e}")
-        return url
+    youtube_domains = ['youtube.com', 'youtu.be']
+    return any(domain in url for domain in youtube_domains)
 
 def extract_video_id(url):
-    """استخراج ID ویدیو از لینک یوتیوب"""
     patterns = [
         r'(?:youtube\.com\/watch\?v=)([^&]+)',
         r'(?:youtu\.be\/)([^?]+)',
         r'(?:youtube\.com\/embed\/)([^?]+)',
         r'(?:youtube\.com\/v\/)([^?]+)',
     ]
-    
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
             return match.group(1)
     return None
 
-def extract_instagram_shortcode(url):
-    """استخراج shortcode از لینک اینستاگرام"""
-    patterns = [
-        r'instagram\.com/p/([^/?]+)',
-        r'instagram\.com/reel/([^/?]+)',
-        r'instagram\.com/tv/([^/?]+)',
-        r'instagram\.com/stories/(?:[^/]+/)?([^/?]+)',
-        r'instagr\.am/p/([^/?]+)',
-        r'instagr\.am/reel/([^/?]+)',
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
-
-# ================= سیستم دانلود فوق پیشرفته با ۶ روش برای هر پلتفرم =================
-class AdvancedDownloader:
+# ================= موتور دانلود یوتیوب با ۲۰ روش =================
+class YouTubeDownloader:
     def __init__(self):
-        self.session = requests.Session()
-        self.setup_session()
+        self.session = requests.Session() if 'requests' in dir() else None
         
-    def setup_session(self):
-        """تنظیمات پیشرفته برای سشن"""
-        self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9,fa;q=0.8",
-            "Accept-Encoding": "gzip, deflate, br",
-            "DNT": "1",
-            "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1",
-            "Sec-Fetch-Dest": "document",
-            "Sec-Fetch-Mode": "navigate",
-            "Sec-Fetch-Site": "none",
-            "Sec-Fetch-User": "?1",
-            "Cache-Control": "max-age=0",
-        })
-        
-        # اضافه کردن کوکی‌های پیشفرض
-        self.session.cookies.update({
-            'CONSENT': 'YES+',
-            'VISITOR_INFO1_LIVE': 'ST1TFB5k0cU',
-        })
-        
-    def get_with_retry(self, url, max_retries=5, timeout=30):
-        """دریافت با چندین بار تلاش و User-Agent مختلف"""
-        user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-            "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        ]
-        
-        for attempt in range(max_retries):
-            try:
-                # تغییر User-Agent هر بار
-                self.session.headers.update({"User-Agent": random.choice(user_agents)})
-                
-                response = self.session.get(
-                    url, 
-                    timeout=timeout,
-                    allow_redirects=True,
-                    verify=False
-                )
-                
-                if response.status_code == 200:
-                    return response
-                elif response.status_code in [403, 429, 500, 502, 503]:
-                    wait_time = 2 ** attempt + random.random()
-                    time.sleep(wait_time)
-                    
-            except Exception as e:
-                print(f"تلاش {attempt + 1} ناموفق: {e}")
-                time.sleep(1)
-        
-        return None
-
-# ================= موتور دانلود اصلی =================
-class UniversalDownloadEngine:
-    def __init__(self):
-        self.downloader = AdvancedDownloader()
-        try:
-            self.instaloader = instaloader.Instaloader(
-                download_videos=True,
-                download_video_thumbnails=False,
-                download_geotags=False,
-                download_comments=False,
-                save_metadata=False,
-                compress_json=False,
-                max_connection_attempts=3
-            )
-        except:
-            self.instaloader = None
-            print("⚠️ instaloader نصب نیست - روش ۷ اینستاگرام غیرفعال است")
-        
-    def _download_file(self, url, prefix):
+    def _download_file(self, url, filename):
         """دانلود فایل از لینک مستقیم"""
         try:
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://www.google.com/",
-            }
-            
-            response = requests.get(url, headers=headers, timeout=60, stream=True)
-            
+            import requests
+            response = requests.get(url, stream=True, timeout=60)
             if response.status_code == 200:
-                # تشخیص پسوند فایل
-                content_type = response.headers.get('content-type', '')
-                if 'video' in content_type:
-                    ext = '.mp4'
-                elif 'image' in content_type:
-                    ext = '.jpg'
-                elif 'audio' in content_type:
-                    ext = '.mp3'
-                else:
-                    # استخراج از URL
-                    ext = os.path.splitext(url.split('?')[0])[1]
-                    if not ext:
-                        ext = '.mp4'
-                
-                filename = f"{DOWNLOAD_PATH}/{prefix}_{int(time.time())}{ext}"
-                
-                # دانلود با نمایش پیشرفت
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                
-                with open(filename, 'wb') as f:
+                filepath = os.path.join(DOWNLOAD_PATH, filename)
+                with open(filepath, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                            downloaded += len(chunk)
-                
-                return {
-                    'filename': filename,
-                    'size': downloaded,
-                    'type': prefix
-                }
-                
-        except Exception as e:
-            print(f"خطا در دانلود فایل: {e}")
+                return filepath
+        except:
             return None
     
-    def _get_downloaded_file(self, info):
-        """پیدا کردن فایل دانلود شده توسط yt-dlp"""
+    # ========== روش 1: yt-dlp (subprocess) ==========
+    def method_1_ytdlp_subprocess(self, url, quality='best'):
+        """روش 1: yt-dlp با subprocess"""
         try:
-            title = info.get('title', 'file')
-            files = os.listdir(DOWNLOAD_PATH)
-            
-            for f in files:
-                if title in f or info.get('id', '') in f:
-                    filename = os.path.join(DOWNLOAD_PATH, f)
-                    if os.path.exists(filename):
-                        return {
-                            'filename': filename,
-                            'size': os.path.getsize(filename),
-                            'type': 'ytdlp',
-                            'info': info
-                        }
-            
-            # آخرین فایل اضافه شده
-            files = sorted(
-                [os.path.join(DOWNLOAD_PATH, f) for f in files],
-                key=os.path.getctime
-            )
-            if files:
-                return {
-                    'filename': files[-1],
-                    'size': os.path.getsize(files[-1]),
-                    'type': 'ytdlp',
-                    'info': info
-                }
-                
-        except Exception as e:
-            print(f"خطا در پیدا کردن فایل: {e}")
+            output_template = f'{DOWNLOAD_PATH}/ytdlp1_%(title)s_%(id)s.%(ext)s'
+            cmd = [
+                'yt-dlp',
+                '-f', f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                '-o', output_template,
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp subprocess', 'size': os.path.getsize(latest)}
+        except:
             return None
-
-    # ========== روش‌های یوتیوب (۶ روش) ==========
-    def youtube_method_1_ytdlp_advanced(self, url):
-        """روش 1: yt-dlp با تنظیمات فوق پیشرفته"""
+    
+    # ========== روش 2: yt-dlp (کتابخانه) ==========
+    def method_2_ytdlp_library(self, url, quality='best'):
+        """روش 2: yt-dlp با کتابخانه"""
+        if not YT_DLP_AVAILABLE:
+            return None
         try:
             ydl_opts = {
                 'quiet': True,
                 'no_warnings': True,
-                'ignoreerrors': True,
-                'socket_timeout': 30,
-                'retries': 10,
-                'fragment_retries': 10,
-                'extract_flat': False,
-                'force_generic_extractor': False,
-                'nocheckcertificate': True,
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'merge_output_format': 'mp4',
-                'outtmpl': f'{DOWNLOAD_PATH}/youtube_%(title)s_%(id)s.%(ext)s',
-                'http_headers': {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
+                'format': f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                'outtmpl': f'{DOWNLOAD_PATH}/ytdlp2_%(title)s_%(id)s.%(ext)s',
+                'noplaylist': True,
             }
-            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info:
-                    return self._get_downloaded_file(info)
+                    filename = ydl.prepare_filename(info)
+                    if os.path.exists(filename):
+                        return {'file': filename, 'method': 'yt-dlp library', 'size': os.path.getsize(filename)}
         except:
             return None
     
-    def youtube_method_2_api_cobalt(self, url):
-        """روش 2: استفاده از API cobalt.tools"""
+    # ========== روش 3: pytubefix ==========
+    def method_3_pytubefix(self, url, quality='best'):
+        """روش 3: pytubefix"""
+        if not PYTUBEFIX_AVAILABLE:
+            return None
         try:
-            api_url = "https://api.cobalt.tools/api/json"
-            data = {
-                "url": url,
-                "downloadMode": "auto",
-                "videoQuality": "max",
-                "audioFormat": "best",
-                "isAudioOnly": False,
+            yt = YouTube(url, on_progress_callback=on_progress)
+            if quality == 'best':
+                stream = yt.streams.get_highest_resolution()
+            elif '1080' in quality:
+                stream = yt.streams.filter(res="1080p", file_extension='mp4').first()
+            elif '720' in quality:
+                stream = yt.streams.filter(res="720p", file_extension='mp4').first()
+            else:
+                stream = yt.streams.get_highest_resolution()
+            
+            if stream:
+                filename = stream.download(output_path=DOWNLOAD_PATH)
+                return {'file': filename, 'method': 'pytubefix', 'size': os.path.getsize(filename)}
+        except:
+            return None
+    
+    # ========== روش 4: youtube-dl ==========
+    def method_4_youtube_dl(self, url, quality='best'):
+        """روش 4: youtube-dl"""
+        if not YOUTUBE_DL_AVAILABLE:
+            return None
+        try:
+            ydl_opts = {
+                'quiet': True,
+                'no_warnings': True,
+                'format': f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                'outtmpl': f'{DOWNLOAD_PATH}/ytdl_%(title)s_%(id)s.%(ext)s',
+                'noplaylist': True,
             }
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "success" and result.get("url"):
-                    return self._download_file(result["url"], "youtube_cobalt")
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                if info:
+                    filename = ydl.prepare_filename(info)
+                    if os.path.exists(filename):
+                        return {'file': filename, 'method': 'youtube-dl', 'size': os.path.getsize(filename)}
         except:
             return None
     
-    def youtube_method_3_api_rapid(self, url):
-        """روش 3: استفاده از RapidAPI (Savetube)"""
+    # ========== روش 5: pafy ==========
+    def method_5_pafy(self, url):
+        """روش 5: pafy"""
+        if not PAFY_AVAILABLE:
+            return None
         try:
-            video_id = extract_video_id(url)
-            if not video_id:
-                return None
-                
-            api_url = f"https://savetube.su/api/download.php"
-            params = {
-                "url": url,
-                "format": "mp4",
-                "quality": "highest"
-            }
-            
-            response = requests.get(api_url, params=params, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("download_url"):
-                    return self._download_file(data["download_url"], "youtube_rapid")
+            video = pafy.new(url)
+            best = video.getbest(preftype="mp4")
+            if best:
+                filename = best.download(filepath=DOWNLOAD_PATH)
+                return {'file': filename, 'method': 'pafy', 'size': os.path.getsize(filename)}
         except:
             return None
     
-    def youtube_method_4_api_yt1s(self, url):
-        """روش 4: استفاده از yt1s.com"""
+    # ========== روش 6: yt-dlp با کوکی ==========
+    def method_6_ytdlp_cookies(self, url, quality='best'):
+        """روش 6: yt-dlp با کوکی"""
         try:
-            api_url = "https://yt1s.com/api/ajaxSearch"
-            data = {"q": url, "vt": "home"}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("links") and data["links"].get("mp4"):
-                    mp4_data = data["links"]["mp4"]
-                    for quality in ["137", "136", "135", "22", "18"]:
-                        if quality in mp4_data:
-                            download_url = mp4_data[quality]["url"]
-                            return self._download_file(download_url, "youtube_yt1s")
+            cookies_file = "cookies.txt"
+            if os.path.exists(cookies_file):
+                cmd = [
+                    'yt-dlp',
+                    '--cookies', cookies_file,
+                    '-f', f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                    '-o', f'{DOWNLOAD_PATH}/ytdlp_cookies_%(title)s_%(id)s.%(ext)s',
+                    '--no-playlist',
+                    '--quiet',
+                    url
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    time.sleep(2)
+                    files = os.listdir(DOWNLOAD_PATH)
+                    latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                    return {'file': latest, 'method': 'yt-dlp cookies', 'size': os.path.getsize(latest)}
         except:
             return None
     
-    def youtube_method_5_audio_only(self, url):
-        """روش 5: دانلود فقط صدا"""
+    # ========== روش 7: yt-dlp با پروکسی ==========
+    def method_7_ytdlp_proxy(self, url, quality='best'):
+        """روش 7: yt-dlp با پروکسی"""
+        proxies = [
+            "http://proxy1.com:8080",
+            "http://proxy2.com:8080",
+        ]
+        for proxy in proxies:
+            try:
+                cmd = [
+                    'yt-dlp',
+                    '--proxy', proxy,
+                    '-f', f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                    '-o', f'{DOWNLOAD_PATH}/ytdlp_proxy_%(title)s_%(id)s.%(ext)s',
+                    '--no-playlist',
+                    '--quiet',
+                    url
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    time.sleep(2)
+                    files = os.listdir(DOWNLOAD_PATH)
+                    latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                    return {'file': latest, 'method': 'yt-dlp proxy', 'size': os.path.getsize(latest)}
+            except:
+                continue
+        return None
+    
+    # ========== روش 8: yt-dlp با Tor ==========
+    def method_8_ytdlp_tor(self, url, quality='best'):
+        """روش 8: yt-dlp با Tor"""
+        try:
+            cmd = [
+                'yt-dlp',
+                '--proxy', 'socks5://127.0.0.1:9050',
+                '-f', f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_tor_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp Tor', 'size': os.path.getsize(latest)}
+        except:
+            return None
+    
+    # ========== روش 9: yt-dlp با کیفیت پایین ==========
+    def method_9_ytdlp_low(self, url):
+        """روش 9: yt-dlp با کیفیت پایین"""
+        try:
+            cmd = [
+                'yt-dlp',
+                '-f', 'worst[ext=mp4]/worst',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_low_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp low', 'size': os.path.getsize(latest)}
+        except:
+            return None
+    
+    # ========== روش 10: yt-dlp با فرمت خاص ==========
+    def method_10_ytdlp_format(self, url):
+        """روش 10: yt-dlp با فرمت خاص"""
+        try:
+            cmd = [
+                'yt-dlp',
+                '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]',
+                '--merge-output-format', 'mp4',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_format_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp format', 'size': os.path.getsize(latest)}
+        except:
+            return None
+    
+    # ========== روش 11: pytubefix با کیفیت پایین ==========
+    def method_11_pytubefix_low(self, url):
+        """روش 11: pytubefix با کیفیت پایین"""
+        if not PYTUBEFIX_AVAILABLE:
+            return None
+        try:
+            yt = YouTube(url)
+            stream = yt.streams.get_lowest_resolution()
+            if stream:
+                filename = stream.download(output_path=DOWNLOAD_PATH)
+                return {'file': filename, 'method': 'pytubefix low', 'size': os.path.getsize(filename)}
+        except:
+            return None
+    
+    # ========== روش 12: pytubefix با صدا ==========
+    def method_12_pytubefix_audio(self, url):
+        """روش 12: pytubefix فقط صدا"""
+        if not PYTUBEFIX_AVAILABLE:
+            return None
+        try:
+            yt = YouTube(url)
+            stream = yt.streams.get_audio_only()
+            if stream:
+                filename = stream.download(output_path=DOWNLOAD_PATH, mp3=True)
+                return {'file': filename, 'method': 'pytubefix audio', 'size': os.path.getsize(filename)}
+        except:
+            return None
+    
+    # ========== روش 13: yt-dlp فقط صدا ==========
+    def method_13_ytdlp_audio(self, url):
+        """روش 13: yt-dlp فقط صدا"""
+        try:
+            cmd = [
+                'yt-dlp',
+                '-f', 'bestaudio',
+                '--extract-audio',
+                '--audio-format', 'mp3',
+                '--audio-quality', '0',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_audio_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp audio', 'size': os.path.getsize(latest)}
+        except:
+            return None
+    
+    # ========== روش 14: youtube-dl فقط صدا ==========
+    def method_14_youtube_dl_audio(self, url):
+        """روش 14: youtube-dl فقط صدا"""
+        if not YOUTUBE_DL_AVAILABLE:
+            return None
         try:
             ydl_opts = {
                 'quiet': True,
@@ -411,653 +398,186 @@ class UniversalDownloadEngine:
                     'preferredcodec': 'mp3',
                     'preferredquality': '192',
                 }],
-                'outtmpl': f'{DOWNLOAD_PATH}/youtube_audio_%(title)s.%(ext)s',
+                'outtmpl': f'{DOWNLOAD_PATH}/ytdl_audio_%(title)s_%(id)s.%(ext)s',
+                'noplaylist': True,
             }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 if info:
-                    return self._get_downloaded_file(info)
+                    filename = ydl.prepare_filename(info).replace('.webm', '.mp3').replace('.m4a', '.mp3')
+                    if os.path.exists(filename):
+                        return {'file': filename, 'method': 'youtube-dl audio', 'size': os.path.getsize(filename)}
         except:
             return None
     
-    def youtube_method_6_720p_fallback(self, url):
-        """روش 6: کیفیت 720p به عنوان آخرین راهکار"""
+    # ========== روش 15: yt-dlp با پلی‌لیست ==========
+    def method_15_ytdlp_playlist(self, url):
+        """روش 15: yt-dlp برای پلی‌لیست"""
         try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'best[height<=720][ext=mp4]/best[ext=mp4]/best',
-                'outtmpl': f'{DOWNLOAD_PATH}/youtube_720p_%(title)s.%(ext)s',
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    return self._get_downloaded_file(info)
-        except:
-            return None
-    
-    # ========== روش‌های اینستاگرام (۱۰ روش) ==========
-    def instagram_method_1_api_cobalt(self, url):
-        """روش 1: API cobalt.tools برای اینستاگرام"""
-        try:
-            api_url = "https://api.cobalt.tools/api/json"
-            data = {"url": url, "downloadMode": "auto", "videoQuality": "max"}
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "success" and result.get("url"):
-                    return self._download_file(result["url"], "instagram_cobalt")
-        except:
-            return None
-    
-    def instagram_method_2_saveinsta(self, url):
-        """روش 2: استفاده از SaveInsta.app"""
-        try:
-            api_url = "https://saveinsta.app/api/ajaxSearch"
-            data = {"q": url, "t": "media"}
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Content-Type": "application/x-www-form-urlencoded",
-                "X-Requested-With": "XMLHttpRequest"
-            }
-            
-            response = requests.post(api_url, data=data, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data"):
-                    import re
-                    urls = re.findall(r'href="([^"]+\.(mp4|jpg|png))"', data["data"])
-                    for url_match in urls:
-                        download_url = url_match[0]
-                        if download_url:
-                            return self._download_file(download_url, "instagram_saveinsta")
-        except:
-            return None
-    
-    def instagram_method_3_igdownloader(self, url):
-        """روش 3: استفاده از IGDownloader"""
-        try:
-            api_url = "https://igdownloader.app/api/ajaxSearch"
-            data = {"q": url, "t": "media"}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data"):
-                    import re
-                    urls = re.findall(r'href="([^"]+\.(mp4|jpg|png))"', data["data"])
-                    for url_match in urls:
-                        download_url = url_match[0]
-                        if download_url:
-                            return self._download_file(download_url, "instagram_igdownloader")
-        except:
-            return None
-    
-    def instagram_method_4_snapinsta(self, url):
-        """روش 4: استفاده از SnapInsta"""
-        try:
-            api_url = "https://snapinsta.app/api/ajaxSearch"
-            data = {"q": url, "t": "media"}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data"):
-                    import re
-                    urls = re.findall(r'href="([^"]+\.(mp4|jpg|png))"', data["data"])
-                    for url_match in urls:
-                        download_url = url_match[0]
-                        if download_url:
-                            return self._download_file(download_url, "instagram_snapinsta")
-        except:
-            return None
-    
-    def instagram_method_5_ytdlp(self, url):
-        """روش 5: yt-dlp برای اینستاگرام"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'best',
-                'outtmpl': f'{DOWNLOAD_PATH}/instagram_%(title)s.%(ext)s',
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    return self._get_downloaded_file(info)
-        except:
-            return None
-    
-    def instagram_method_6_direct_extract(self, url):
-        """روش 6: استخراج مستقیم از HTML صفحه"""
-        try:
-            # استفاده از یوزر ایجنت موبایل
-            headers = {
-                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
-            }
-            response = requests.get(url, headers=headers, timeout=15)
-            
-            if response.status_code == 200:
-                patterns = [
-                    r'"video_url":"([^"]+)"',
-                    r'"display_url":"([^"]+)"',
-                    r'<meta property="og:video" content="([^"]+)"',
-                    r'<meta property="og:image" content="([^"]+)"',
-                    r'"src":"([^"]+\.mp4)"',
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, response.text)
-                    for media_url in matches:
-                        media_url = media_url.replace('\\u0026', '&').replace('\\/', '/')
-                        if media_url.startswith('//'):
-                            media_url = 'https:' + media_url
-                        
-                        result = self._download_file(media_url, "instagram_direct")
-                        if result:
-                            return result
-        except:
-            return None
-    
-    def instagram_method_7_rapidapi(self, url):
-        """روش 7: استفاده از RapidAPI"""
-        try:
-            rapid_api_key = "32c3cfa93amsh1e9be3ab9c2b24ap1ca06djsn7bcb853f466f"
-            
-            response = requests.get(
-                "https://instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com/get-info-rapidapi",
-                headers={
-                    "X-RapidAPI-Key": rapid_api_key,
-                    "X-RapidAPI-Host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com"
-                },
-                params={"url": url},
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("media") and data["media"][0].get("video_url"):
-                    return self._download_file(data["media"][0]["video_url"], "instagram_rapidapi")
-        except:
-            return None
-    
-    def instagram_method_8_instaloader(self, url):
-        """روش 8: استفاده از Instaloader"""
-        if not self.instaloader:
-            return None
-            
-        try:
-            shortcode = extract_instagram_shortcode(url)
-            if not shortcode:
-                return None
-            
-            post = instaloader.Post.from_shortcode(self.instaloader.context, shortcode)
-            
-            if post.is_video:
-                video_url = post.video_url
-                return self._download_file(video_url, "instagram_instaloader")
-            else:
-                image_url = post.url
-                return self._download_file(image_url, "instagram_instaloader")
-        except:
-            return None
-    
-    def instagram_method_9_instagram_video_api(self, url):
-        """روش 9: Instagram Video Downloader API"""
-        try:
-            rapid_api_key = "32c3cfa93amsh1e9be3ab9c2b24ap1ca06djsn7bcb853f466f"
-            
-            response = requests.get(
-                "https://instagram-video-downloader-download-instagram-videos.p.rapidapi.com/instagram",
-                headers={
-                    "X-RapidAPI-Key": rapid_api_key,
-                    "X-RapidAPI-Host": "instagram-video-downloader-download-instagram-videos.p.rapidapi.com"
-                },
-                params={"url": url},
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("video") and data["video"][0].get("video"):
-                    return self._download_file(data["video"][0]["video"], "instagram_video_api")
-        except:
-            return None
-    
-    def instagram_method_10_direct_download(self, url):
-        """روش 10: دانلود با لینک مستقیم از سرور"""
-        try:
-            services = [
-                {"url": "https://instasave.website/api/ajaxSearch", "data": {"q": url, "t": "media"}},
-                {"url": "https://insta.saveinsta.app/api/ajaxSearch", "data": {"q": url, "t": "media"}},
+            cmd = [
+                'yt-dlp',
+                '-f', 'best[ext=mp4]/best',
+                '-o', f'{DOWNLOAD_PATH}/playlist/%(playlist_title)s/%(playlist_index)s_%(title)s.%(ext)s',
+                '--yes-playlist',
+                '--quiet',
+                url
             ]
-            
-            for service in services:
-                try:
-                    response = requests.post(service["url"], data=service["data"], timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        if data.get("data"):
-                            urls = re.findall(r'href="([^"]+\.(mp4|jpg|png))"', data["data"])
-                            for url_match in urls:
-                                download_url = url_match[0]
-                                if download_url:
-                                    return self._download_file(download_url, "instagram_direct_download")
-                except:
-                    continue
+            os.makedirs(f'{DOWNLOAD_PATH}/playlist', exist_ok=True)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return {'method': 'yt-dlp playlist', 'success': True}
         except:
             return None
     
-    # ========== روش‌های پینترست (۶ روش) ==========
-    def pinterest_method_1_api_official(self, url):
-        """روش 1: API رسمی پینترست"""
+    # ========== روش 16: yt-dlp با زیرنویس ==========
+    def method_16_ytdlp_subtitles(self, url):
+        """روش 16: yt-dlp با زیرنویس"""
         try:
-            # استخراج ID پین
-            pin_id = None
-            patterns = [r'/pin/(\d+)', r'pin_id=(\d+)']
-            for pattern in patterns:
-                match = re.search(pattern, url)
-                if match:
-                    pin_id = match.group(1)
-                    break
-            
-            if pin_id:
-                api_url = f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
-                response = requests.get(api_url, timeout=30)
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    if data.get("data") and data["data"][0].get("images"):
-                        images = data["data"][0]["images"]
-                        img_url = images.get("orig", {}).get("url") or images.get("736x", {}).get("url")
-                        
-                        if img_url:
-                            return self._download_file(img_url, "pinterest_api")
-        except:
-            return None
-    
-    def pinterest_method_2_pindown(self, url):
-        """روش 2: استفاده از PinDown.app"""
-        try:
-            api_url = "https://pindown.app/api/download"
-            data = {"url": url}
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("download_url"):
-                    return self._download_file(data["download_url"], "pinterest_pindown")
-        except:
-            return None
-    
-    def pinterest_method_3_savepin(self, url):
-        """روش 3: استفاده از SavePin.io"""
-        try:
-            api_url = "https://savepin.io/fetch"
-            data = {"url": url}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                import re
-                urls = re.findall(r'href="([^"]+\.(jpg|png|mp4))"', response.text)
-                for url_match in urls:
-                    download_url = url_match[0]
-                    if download_url:
-                        return self._download_file(download_url, "pinterest_savepin")
-        except:
-            return None
-    
-    def pinterest_method_4_pinvideo(self, url):
-        """روش 4: استفاده از PinVideo.io"""
-        try:
-            api_url = "https://pinvideo.io/api/fetch"
-            data = {"url": url}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("url"):
-                    return self._download_file(data["url"], "pinterest_pinvideo")
-        except:
-            return None
-    
-    def pinterest_method_5_ytdlp(self, url):
-        """روش 5: yt-dlp برای پینترست"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'best',
-                'outtmpl': f'{DOWNLOAD_PATH}/pinterest_%(title)s.%(ext)s',
-                'force_generic_extractor': True,
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    return self._get_downloaded_file(info)
-        except:
-            return None
-    
-    def pinterest_method_6_direct_extract(self, url):
-        """روش 6: استخراج مستقیم از HTML"""
-        try:
-            response = self.downloader.get_with_retry(url)
-            if response:
-                patterns = [
-                    r'<meta property="og:image" content="([^"]+)"',
-                    r'<meta property="og:video" content="([^"]+)"',
-                    r'"image":"([^"]+pinimg[^"]+)"',
-                    r'"image_original_url":"([^"]+)"',
-                ]
-                
-                for pattern in patterns:
-                    matches = re.findall(pattern, response.text)
-                    for media_url in matches:
-                        if media_url:
-                            media_url = media_url.replace('\\u002F', '/')
-                            return self._download_file(media_url, "pinterest_direct")
-        except:
-            return None
-    
-    # ========== روش‌های تیک‌تاک (۶ روش) ==========
-    def tiktok_method_1_api_cobalt(self, url):
-        """روش 1: API cobalt.tools برای تیک‌تاک"""
-        try:
-            api_url = "https://api.cobalt.tools/api/json"
-            data = {"url": url, "downloadMode": "auto"}
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "success" and result.get("url"):
-                    return self._download_file(result["url"], "tiktok_cobalt")
-        except:
-            return None
-    
-    def tiktok_method_2_tikwm(self, url):
-        """روش 2: استفاده از TikWM.com"""
-        try:
-            api_url = "https://tikwm.com/api/"
-            data = {"url": url, "hd": 1}
-            headers = {"Content-Type": "application/x-www-form-urlencoded"}
-            
-            response = requests.post(api_url, data=data, headers=headers, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("data"):
-                    download_url = result["data"].get("play") or result["data"].get("hdplay")
-                    if download_url:
-                        return self._download_file(download_url, "tiktok_tikwm")
-        except:
-            return None
-    
-    def tiktok_method_3_snaptik(self, url):
-        """روش 3: استفاده از SnapTik.app"""
-        try:
-            api_url = "https://snaptik.app/api/ajaxSearch"
-            data = {"q": url, "lang": "en"}
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Content-Type": "application/x-www-form-urlencoded",
-            }
-            
-            response = requests.post(api_url, data=data, headers=headers, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data"):
-                    import re
-                    urls = re.findall(r'href="([^"]+\.mp4)"', data["data"])
-                    for download_url in urls:
-                        if download_url:
-                            return self._download_file(download_url, "tiktok_snaptik")
-        except:
-            return None
-    
-    def tiktok_method_4_ssstik(self, url):
-        """روش 4: استفاده از SSSTik.io"""
-        try:
-            api_url = "https://ssstik.io/api"
-            data = {"url": url}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("url"):
-                    return self._download_file(data["url"], "tiktok_ssstik")
-        except:
-            return None
-    
-    def tiktok_method_5_musicaldown(self, url):
-        """روش 5: استفاده از MusicalDown.com"""
-        try:
-            api_url = "https://musicaldown.com/api/download"
-            data = {"url": url}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("video_url"):
-                    return self._download_file(data["video_url"], "tiktok_musicaldown")
-        except:
-            return None
-    
-    def tiktok_method_6_ytdlp(self, url):
-        """روش 6: yt-dlp برای تیک‌تاک"""
-        try:
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'best',
-                'outtmpl': f'{DOWNLOAD_PATH}/tiktok_%(title)s.%(ext)s',
-                'extractor_args': {'tiktok': {'app_version': 'latest'}}
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    return self._get_downloaded_file(info)
-        except:
-            return None
-    
-    # ========== روش‌های عمومی (۶ روش) ==========
-    def general_method_1_ytdlp(self, url):
-        """روش 1: yt-dlp برای سایت‌های عمومی"""
-        try:
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+            cmd = [
+                'yt-dlp',
+                '--write-subs',
+                '--sub-lang', 'en,fa',
+                '--embed-subs',
+                '-f', 'best[ext=mp4]/best',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_subs_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
             ]
-            
-            ydl_opts = {
-                'quiet': True,
-                'no_warnings': True,
-                'format': 'best[filesize<300M]/best',
-                'outtmpl': f'{DOWNLOAD_PATH}/%(title)s.%(ext)s',
-                'socket_timeout': 30,
-                'retries': 5,
-                'http_headers': {
-                    'User-Agent': random.choice(user_agents),
-                }
-            }
-            
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    return self._get_downloaded_file(info)
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp with subs', 'size': os.path.getsize(latest)}
         except:
             return None
     
-    def general_method_2_direct_request(self, url):
-        """روش 2: دانلود مستقیم با requests"""
+    # ========== روش 17: yt-dlp با محدودیت سرعت ==========
+    def method_17_ytdlp_rate_limit(self, url):
+        """روش 17: yt-dlp با محدودیت سرعت"""
         try:
-            response = self.downloader.get_with_retry(url, max_retries=3)
-            if response and 'content-type' in response.headers:
-                content_type = response.headers['content-type']
-                
-                if any(x in content_type for x in ['video', 'image', 'audio']):
-                    filename = f"{DOWNLOAD_PATH}/direct_{int(time.time())}"
-                    
-                    if 'video' in content_type:
-                        filename += '.mp4'
-                    elif 'image' in content_type:
-                        filename += '.jpg'
-                    elif 'audio' in content_type:
-                        filename += '.mp3'
-                    else:
-                        filename += '.bin'
-                    
-                    with open(filename, 'wb') as f:
-                        f.write(response.content)
-                    
-                    return {
-                        'filename': filename,
-                        'size': len(response.content),
-                        'type': 'direct'
-                    }
-        except:
-            return None
-    
-    def general_method_3_snapsave(self, url):
-        """روش 3: استفاده از SnapSave.app برای سایت‌های مختلف"""
-        try:
-            api_url = "https://snapsave.app/api/ajaxSearch"
-            data = {"q": url, "lang": "en"}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("data"):
-                    import re
-                    urls = re.findall(r'href="([^"]+\.(mp4|mp3|jpg))"', data["data"])
-                    for url_match in urls:
-                        download_url = url_match[0]
-                        if download_url:
-                            return self._download_file(download_url, "general_snapsave")
-        except:
-            return None
-    
-    def general_method_4_savethevideo(self, url):
-        """روش 4: استفاده از SaveTheVideo.com"""
-        try:
-            api_url = "https://savethevideo.com/api/fetch"
-            data = {"url": url}
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("download_url"):
-                    return self._download_file(data["download_url"], "general_savethevideo")
-        except:
-            return None
-    
-    def general_method_5_cobalt(self, url):
-        """روش 5: استفاده از cobalt.tools برای سایت‌های عمومی"""
-        try:
-            api_url = "https://api.cobalt.tools/api/json"
-            data = {"url": url, "downloadMode": "auto"}
-            
-            response = requests.post(api_url, json=data, timeout=30)
-            if response.status_code == 200:
-                result = response.json()
-                if result.get("status") == "success" and result.get("url"):
-                    return self._download_file(result["url"], "general_cobalt")
-        except:
-            return None
-    
-    def general_method_6_savetube(self, url):
-        """روش 6: استفاده از SaveTube.app"""
-        try:
-            api_url = "https://savetube.app/api/download"
-            data = {"url": url}
-            
-            response = requests.post(api_url, data=data, timeout=30)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("download_url"):
-                    return self._download_file(data["download_url"], "general_savetube")
-        except:
-            return None
-    
-    def download(self, url, chat_id, user_id, is_group=False, msg_id=None, platform_type=None):
-        """تابع اصلی دانلود با ۶ روش برای هر پلتفرم"""
-        
-        # تعریف روش‌های دانلود برای هر پلتفرم
-        methods_map = {
-            "Youtube": [
-                self.youtube_method_1_ytdlp_advanced,
-                self.youtube_method_2_api_cobalt,
-                self.youtube_method_3_api_rapid,
-                self.youtube_method_4_api_yt1s,
-                self.youtube_method_5_audio_only,
-                self.youtube_method_6_720p_fallback,
-            ],
-            "Instagram": [
-                self.instagram_method_1_api_cobalt,
-                self.instagram_method_2_saveinsta,
-                self.instagram_method_3_igdownloader,
-                self.instagram_method_4_snapinsta,
-                self.instagram_method_5_ytdlp,
-                self.instagram_method_6_direct_extract,
-                self.instagram_method_7_rapidapi,
-                self.instagram_method_8_instaloader,
-                self.instagram_method_9_instagram_video_api,
-                self.instagram_method_10_direct_download,
-            ],
-            "Pinterest": [
-                self.pinterest_method_1_api_official,
-                self.pinterest_method_2_pindown,
-                self.pinterest_method_3_savepin,
-                self.pinterest_method_4_pinvideo,
-                self.pinterest_method_5_ytdlp,
-                self.pinterest_method_6_direct_extract,
-            ],
-            "Tiktok": [
-                self.tiktok_method_1_api_cobalt,
-                self.tiktok_method_2_tikwm,
-                self.tiktok_method_3_snaptik,
-                self.tiktok_method_4_ssstik,
-                self.tiktok_method_5_musicaldown,
-                self.tiktok_method_6_ytdlp,
-            ],
-            "Other": [
-                self.general_method_1_ytdlp,
-                self.general_method_2_direct_request,
-                self.general_method_3_snapsave,
-                self.general_method_4_savethevideo,
-                self.general_method_5_cobalt,
-                self.general_method_6_savetube,
+            cmd = [
+                'yt-dlp',
+                '--limit-rate', '1M',
+                '-f', 'best[ext=mp4]/best',
+                '-o', f'{DOWNLOAD_PATH}/ytdlp_rate_%(title)s_%(id)s.%(ext)s',
+                '--no-playlist',
+                '--quiet',
+                url
             ]
-        }
-        
-        # انتخاب روش‌های مناسب
-        methods = methods_map.get(platform_type, methods_map["Other"])
-        platform_name = platform_type if platform_type != "Other" else "عمومی"
-        
-        # به‌روزرسانی پیام
-        if msg_id:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                return {'file': latest, 'method': 'yt-dlp rate limit', 'size': os.path.getsize(latest)}
+        except:
+            return None
+    
+    # ========== روش 18: yt-dlp با یوزراینجنت ==========
+    def method_18_ytdlp_useragent(self, url):
+        """روش 18: yt-dlp با تغییر User-Agent"""
+        user_agents = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36",
+        ]
+        for ua in user_agents:
             try:
-                bot.edit_message_text(
-                    f"🔄 **در حال دانلود از {platform_name}...**\n📡 {len(methods)} روش مختلف آماده شد",
-                    chat_id,
-                    msg_id,
-                    parse_mode="Markdown"
-                )
+                cmd = [
+                    'yt-dlp',
+                    '--user-agent', ua,
+                    '-f', 'best[ext=mp4]/best',
+                    '-o', f'{DOWNLOAD_PATH}/ytdlp_ua_%(title)s_%(id)s.%(ext)s',
+                    '--no-playlist',
+                    '--quiet',
+                    url
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    time.sleep(2)
+                    files = os.listdir(DOWNLOAD_PATH)
+                    latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                    return {'file': latest, 'method': 'yt-dlp UA', 'size': os.path.getsize(latest)}
             except:
-                pass
-        
-        # امتحان همه روش‌ها
-        for i, method in enumerate(methods, 1):
+                continue
+        return None
+    
+    # ========== روش 19: دانلود از طریق API یوتیوب ==========
+    def method_19_youtube_api(self, url):
+        """روش 19: دانلود از طریق API یوتیوب"""
+        if not YOUTUBE_API_AVAILABLE or YOUTUBE_API_KEY == "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAA":
+            return None
+        try:
+            video_id = extract_video_id(url)
+            if video_id:
+                youtube = build('youtube', 'v3', developerKey=YOUTUBE_API_KEY)
+                request = youtube.videos().list(part='snippet,contentDetails', id=video_id)
+                response = request.execute()
+                if response['items']:
+                    return {'info': response['items'][0], 'method': 'YouTube API'}
+        except:
+            return None
+    
+    # ========== روش 20: yt-dlp با رفرش ==========
+    def method_20_ytdlp_retry(self, url, quality='best'):
+        """روش 20: yt-dlp با تلاش مجدد"""
+        for attempt in range(3):
             try:
-                if msg_id:
+                cmd = [
+                    'yt-dlp',
+                    '--retries', '10',
+                    '--fragment-retries', '10',
+                    '-f', f'{quality}[ext=mp4]/best[ext=mp4]/best',
+                    '-o', f'{DOWNLOAD_PATH}/ytdlp_retry{attempt}_%(title)s_%(id)s.%(ext)s',
+                    '--no-playlist',
+                    '--quiet',
+                    url
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True)
+                if result.returncode == 0:
+                    time.sleep(2)
+                    files = os.listdir(DOWNLOAD_PATH)
+                    latest = max([os.path.join(DOWNLOAD_PATH, f) for f in files], key=os.path.getctime)
+                    return {'file': latest, 'method': f'yt-dlp retry {attempt+1}', 'size': os.path.getsize(latest)}
+            except:
+                time.sleep(2)
+        return None
+    
+    def download_with_all_methods(self, url, quality='best', chat_id=None, msg_id=None):
+        """تلاش با همه روش‌ها"""
+        methods = [
+            ("yt-dlp subprocess", lambda: self.method_1_ytdlp_subprocess(url, quality)),
+            ("yt-dlp library", lambda: self.method_2_ytdlp_library(url, quality)),
+            ("pytubefix", lambda: self.method_3_pytubefix(url, quality)),
+            ("youtube-dl", lambda: self.method_4_youtube_dl(url, quality)),
+            ("pafy", lambda: self.method_5_pafy(url)),
+            ("yt-dlp cookies", lambda: self.method_6_ytdlp_cookies(url, quality)),
+            ("yt-dlp proxy", lambda: self.method_7_ytdlp_proxy(url, quality)),
+            ("yt-dlp Tor", lambda: self.method_8_ytdlp_tor(url, quality)),
+            ("yt-dlp low quality", lambda: self.method_9_ytdlp_low(url)),
+            ("yt-dlp format", lambda: self.method_10_ytdlp_format(url)),
+            ("pytubefix low", lambda: self.method_11_pytubefix_low(url)),
+            ("pytubefix audio", lambda: self.method_12_pytubefix_audio(url)),
+            ("yt-dlp audio", lambda: self.method_13_ytdlp_audio(url)),
+            ("youtube-dl audio", lambda: self.method_14_youtube_dl_audio(url)),
+            ("yt-dlp with subs", lambda: self.method_16_ytdlp_subtitles(url)),
+            ("yt-dlp rate limit", lambda: self.method_17_ytdlp_rate_limit(url)),
+            ("yt-dlp useragent", lambda: self.method_18_ytdlp_useragent(url)),
+            ("yt-dlp retry", lambda: self.method_20_ytdlp_retry(url, quality)),
+        ]
+        
+        # اضافه کردن روش API اگر کلید داشته باشیم
+        if YOUTUBE_API_KEY != "AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAA":
+            methods.append(("YouTube API", lambda: self.method_19_youtube_api(url)))
+        
+        for i, (method_name, method_func) in enumerate(methods, 1):
+            try:
+                if msg_id and chat_id:
                     try:
                         bot.edit_message_text(
-                            f"🔄 **{platform_name}** - روش {i}/{len(methods)}...",
+                            f"🔄 **روش {i}/{len(methods)}**\n📡 {method_name}...",
                             chat_id,
                             msg_id,
                             parse_mode="Markdown"
@@ -1065,86 +585,30 @@ class UniversalDownloadEngine:
                     except:
                         pass
                 
-                result = method(url)
+                result = method_func()
                 
-                if result and os.path.exists(result['filename']):
-                    # بررسی حجم فایل
-                    if result['size'] > MAX_FILE_SIZE:
-                        os.remove(result['filename'])
+                if result and result.get('file') and os.path.exists(result['file']):
+                    file_size = os.path.getsize(result['file'])
+                    if file_size > MAX_FILE_SIZE:
+                        os.remove(result['file'])
                         continue
                     
-                    # آپلود فایل
-                    if msg_id:
-                        try:
-                            bot.edit_message_text(
-                                f"📤 **در حال آپلود...**\n📊 حجم: {result['size']/1024/1024:.1f}MB",
-                                chat_id,
-                                msg_id,
-                                parse_mode="Markdown"
-                            )
-                        except:
-                            pass
-                    
-                    # ارسال فایل
-                    with open(result['filename'], 'rb') as f:
-                        if result['filename'].endswith(('.mp4', '.mkv', '.webm')):
-                            bot.send_video(chat_id, f, caption=f"✅ **دانلود از {platform_name}**")
-                        elif result['filename'].endswith(('.mp3', '.m4a', '.ogg')):
-                            bot.send_audio(chat_id, f, caption=f"✅ **دانلود از {platform_name}**")
-                        elif result['filename'].endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
-                            bot.send_photo(chat_id, f, caption=f"✅ **دانلود از {platform_name}**")
-                        else:
-                            bot.send_document(chat_id, f, caption=f"✅ **دانلود از {platform_name}**")
-                    
-                    # ثبت در دیتابیس
-                    db.add_download(
-                        user_id, chat_id, url,
-                        result['type'], result['size'],
-                        "group" if is_group else "private",
-                        platform_name
-                    )
-                    
-                    # پاک کردن فایل
-                    os.remove(result['filename'])
-                    
-                    if msg_id:
-                        try:
-                            bot.edit_message_text(
-                                f"✅ **دانلود از {platform_name} با موفقیت انجام شد!**",
-                                chat_id,
-                                msg_id,
-                                parse_mode="Markdown"
-                            )
-                        except:
-                            pass
-                    
-                    return True
+                    return {
+                        'filename': result['file'],
+                        'size': file_size,
+                        'method': method_name
+                    }
                     
             except Exception as e:
-                print(f"خطا در روش {i} {platform_name}: {e}")
+                print(f"خطا در روش {method_name}: {e}")
                 continue
         
-        # اگر هیچ روشی جواب نداد
-        if msg_id:
-            try:
-                bot.edit_message_text(
-                    f"❌ **متأسفانه دانلود از {platform_name} با مشکل مواجه شد**\n\n"
-                    f"💡 **همه {len(methods)} روش امتحان شدند**\n"
-                    f"• لینک را دوباره بررسی کنید\n"
-                    f"• چند دقیقه بعد دوباره تلاش کنید\n"
-                    f"🔄 **لینک:**\n"
-                    f"`{url}`",
-                    chat_id,
-                    msg_id,
-                    parse_mode="Markdown"
-                )
-            except:
-                pass
-        
-        return False
+        return None
 
-# ================= ایجاد نمونه از موتور دانلود =================
-downloader_engine = UniversalDownloadEngine()
+# ================= ایجاد نمونه =================
+downloader = YouTubeDownloader()
+db = None
+bot = None
 
 # ================= دیتابیس =================
 class Database:
@@ -1152,7 +616,6 @@ class Database:
         self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
         self.cursor = self.conn.cursor()
         self.init_db()
-        self.start_keep_alive()
 
     def init_db(self):
         self.cursor.execute("""
@@ -1163,130 +626,26 @@ class Database:
             joined_date TIMESTAMP,
             last_use TIMESTAMP,
             download_count INTEGER DEFAULT 0,
+            download_method TEXT,
             is_blocked INTEGER DEFAULT 0,
             is_admin INTEGER DEFAULT 0
         )
         """)
-        self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS groups(
-            chat_id INTEGER PRIMARY KEY,
-            title TEXT,
-            added_date TIMESTAMP,
-            last_active TIMESTAMP,
-            is_active INTEGER DEFAULT 1
-        )
-        """)
-        self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS downloads(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            chat_id INTEGER,
-            url TEXT,
-            format TEXT,
-            size INTEGER,
-            timestamp TIMESTAMP,
-            source TEXT,
-            platform TEXT
-        )
-        """)
-        self.cursor.execute("""
-        CREATE TABLE IF NOT EXISTS settings(
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-        """)
-        defaults = [
-            ("bot_status", "ON"),
-            ("total_users", "0"),
-            ("total_downloads", "0"),
-            ("total_groups", "0"),
-            ("group_mode", "ON"),
-            ("private_mode", "ON")
-        ]
-        for k, v in defaults:
-            self.cursor.execute("INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)", (k, v))
         self.cursor.execute("INSERT OR IGNORE INTO users(user_id,is_admin) VALUES(?,1)", (ADMIN_ID,))
         self.conn.commit()
-
-    def start_keep_alive(self):
-        def ping():
-            while True:
-                try:
-                    self.cursor.execute("SELECT 1")
-                    self.conn.commit()
-                except:
-                    self.reconnect()
-                time.sleep(60)
-        threading.Thread(target=ping, daemon=True).start()
-
-    def reconnect(self):
-        try:
-            self.conn.close()
-        except:
-            pass
-        self.conn = sqlite3.connect("database/bot.db", check_same_thread=False)
-        self.cursor = self.conn.cursor()
 
     def add_user(self, user_id, username, first_name):
         now = datetime.now()
         self.cursor.execute("SELECT * FROM users WHERE user_id=?", (user_id,))
         if self.cursor.fetchone():
-            self.cursor.execute("UPDATE users SET last_use=?, username=?, first_name=? WHERE user_id=?",
-                                (now, username, first_name, user_id))
+            self.cursor.execute("UPDATE users SET last_use=? WHERE user_id=?", (now, user_id))
         else:
-            self.cursor.execute("""
-            INSERT INTO users(user_id,username,first_name,joined_date,last_use)
-            VALUES(?,?,?,?,?)
-            """, (user_id, username, first_name, now, now))
-            total = int(self.get_setting("total_users"))
-            self.set_setting("total_users", str(total + 1))
+            self.cursor.execute("INSERT INTO users(user_id,username,first_name,joined_date,last_use) VALUES(?,?,?,?,?)",
+                              (user_id, username, first_name, now, now))
         self.conn.commit()
 
-    def add_group(self, chat_id, title):
-        now = datetime.now()
-        self.cursor.execute("SELECT * FROM groups WHERE chat_id=?", (chat_id,))
-        if self.cursor.fetchone():
-            self.cursor.execute("UPDATE groups SET last_active=?, title=? WHERE chat_id=?", (now, title, chat_id))
-        else:
-            self.cursor.execute("""
-            INSERT INTO groups(chat_id,title,added_date,last_active)
-            VALUES(?,?,?,?)
-            """, (chat_id, title, now, now))
-            total = int(self.get_setting("total_groups"))
-            self.set_setting("total_groups", str(total + 1))
-        self.conn.commit()
-
-    def add_download(self, user_id, chat_id, url, format_type, size, source, platform):
-        now = datetime.now()
-        self.cursor.execute("""
-        INSERT INTO downloads(user_id,chat_id,url,format,size,timestamp,source,platform)
-        VALUES(?,?,?,?,?,?,?,?)
-        """, (user_id, chat_id, url, format_type, size, now, source, platform))
-        self.cursor.execute("UPDATE users SET download_count=download_count+1 WHERE user_id=?", (user_id,))
-        total = int(self.get_setting("total_downloads"))
-        self.set_setting("total_downloads", str(total + 1))
-        self.conn.commit()
-
-    def get_setting(self, key):
-        self.cursor.execute("SELECT value FROM settings WHERE key=?", (key,))
-        r = self.cursor.fetchone()
-        return r[0] if r else "0"
-
-    def set_setting(self, key, val):
-        self.cursor.execute("UPDATE settings SET value=? WHERE key=?", (val, key))
-        self.conn.commit()
-
-    def is_blocked(self, user_id):
-        self.cursor.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,))
-        r = self.cursor.fetchone()
-        return r and r[0] == 1
-
-    def block_user(self, user_id):
-        self.cursor.execute("UPDATE users SET is_blocked=1 WHERE user_id=?", (user_id,))
-        self.conn.commit()
-
-    def unblock_user(self, user_id):
-        self.cursor.execute("UPDATE users SET is_blocked=0 WHERE user_id=?", (user_id,))
+    def add_download(self, user_id, method):
+        self.cursor.execute("UPDATE users SET download_count=download_count+1, download_method=? WHERE user_id=?", (method, user_id))
         self.conn.commit()
 
     def check_membership(self, user_id):
@@ -1296,258 +655,48 @@ class Database:
                 if member.status not in ['member', 'administrator', 'creator']:
                     return False
             return True
-        except Exception as e:
-            print(f"خطا در بررسی عضویت: {e}")
+        except:
             return False
 
-    def get_stats(self):
-        self.cursor.execute("SELECT COUNT(*),SUM(download_count) FROM users")
-        total_users, total_downloads = self.cursor.fetchone()
-        self.cursor.execute("SELECT COUNT(*) FROM groups")
-        total_groups = self.cursor.fetchone()[0]
-        self.cursor.execute("SELECT COUNT(*) FROM users WHERE date(last_use)=date('now')")
-        active_today = self.cursor.fetchone()[0]
-        self.cursor.execute("SELECT COUNT(*) FROM groups WHERE date(last_active)=date('now')")
-        active_groups = self.cursor.fetchone()[0]
-        self.cursor.execute("SELECT COUNT(*) FROM users WHERE is_blocked=1")
-        blocked = self.cursor.fetchone()[0]
-        return {
-            "total_users": total_users or 0,
-            "total_downloads": total_downloads or 0,
-            "total_groups": total_groups or 0,
-            "active_today": active_today or 0,
-            "active_groups": active_groups or 0,
-            "blocked": blocked or 0,
-            "bot_status": self.get_setting("bot_status"),
-            "group_mode": self.get_setting("group_mode"),
-            "private_mode": self.get_setting("private_mode")
-        }
+    def is_blocked(self, user_id):
+        self.cursor.execute("SELECT is_blocked FROM users WHERE user_id=?", (user_id,))
+        r = self.cursor.fetchone()
+        return r and r[0] == 1
 
-    def get_users(self, limit=20):
-        self.cursor.execute("""
-        SELECT user_id, username, first_name, download_count, is_blocked
-        FROM users ORDER BY last_use DESC LIMIT ?
-        """, (limit,))
-        return self.cursor.fetchall()
-
-    def get_groups(self, limit=20):
-        self.cursor.execute("""
-        SELECT chat_id, title, added_date, last_active, is_active
-        FROM groups ORDER BY last_active DESC LIMIT ?
-        """, (limit,))
-        return self.cursor.fetchall()
-
-    def get_recent_downloads(self, limit=20):
-        self.cursor.execute("""
-        SELECT user_id, url, platform, timestamp FROM downloads ORDER BY timestamp DESC LIMIT ?
-        """, (limit,))
-        return self.cursor.fetchall()
-
-# ================= ربات =================
+# ================= ایجاد نمونه دیتابیس و ربات =================
 db = Database()
 bot = telebot.TeleBot(TOKEN)
 
-# ================= تابع بررسی عضویت با دکمه =================
+# ================= توابع کمکی =================
 def force_join_markup():
     markup = InlineKeyboardMarkup(row_width=1)
     for name, link in REQUIRED_CHANNELS:
         markup.add(InlineKeyboardButton(f"📢 عضویت در {name}", url=link))
-    markup.add(InlineKeyboardButton("✅ عضویت را بررسی کن", callback_data="check_join"))
+    markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
     return markup
 
-# ================= تابع دانلود اصلی (نسخه فوق العاده قدرتمند) =================
-def download_media(url, chat_id, user_id, is_group=False):
-    try:
-        platform = detect_platform(url)
-        
-        # ارسال پیام شروع
-        msg = bot.send_message(
-            chat_id, 
-            f"🎯 **پلتفرم: {platform}**\n🔄 **فعال‌سازی موتور دانلود فوق پیشرفته...**", 
-            parse_mode="Markdown"
-        )
-        
-        # استفاده از موتور دانلود پیشرفته
-        return downloader_engine.download(url, chat_id, user_id, is_group, msg.message_id, platform)
-        
-    except Exception as e:
-        bot.send_message(chat_id, f"❌ **خطای سیستمی:**\n`{str(e)[:200]}`", parse_mode="Markdown")
-        return False
+def format_duration(seconds):
+    minutes = seconds // 60
+    hours = minutes // 60
+    if hours > 0:
+        return f"{hours}:{minutes%60:02d}:{seconds%60:02d}"
+    else:
+        return f"{minutes}:{seconds%60:02d}"
 
-# ================= پنل ادمین =================
-@bot.message_handler(commands=['admin'])
-def admin_command(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "⛔ شما دسترسی به پنل ادمین ندارید!")
-        return
-    
-    stats = db.get_stats()
-    
-    text = f"👑 **پنل مدیریت** 👑\n\n"
-    text += f"📊 **آمار کلی:**\n"
-    text += f"👥 کاربران کل: {stats['total_users']}\n"
-    text += f"📥 دانلودهای کل: {stats['total_downloads']}\n"
-    text += f"👥 گروه‌های کل: {stats['total_groups']}\n"
-    text += f"🟢 کاربران فعال امروز: {stats['active_today']}\n"
-    text += f"👥 گروه‌های فعال امروز: {stats['active_groups']}\n"
-    text += f"🔒 کاربران بلاک شده: {stats['blocked']}\n"
-    text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}\n\n"
-    text += f"🔽 از دکمه‌های زیر استفاده کنید:"
-    
+# ================= کیبورد انتخاب کیفیت =================
+def quality_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🟢 روشن/خاموش", callback_data="admin_toggle"),
-        InlineKeyboardButton("📊 آمار کامل", callback_data="admin_stats"),
-        InlineKeyboardButton("👥 لیست کاربران", callback_data="admin_users"),
-        InlineKeyboardButton("📥 لیست دانلودها", callback_data="admin_downloads"),
-        InlineKeyboardButton("👥 لیست گروه‌ها", callback_data="admin_groups"),
-        InlineKeyboardButton("🔒 بلاک کاربر", callback_data="admin_block"),
-        InlineKeyboardButton("🔓 آنبلاک کاربر", callback_data="admin_unblock"),
-        InlineKeyboardButton("📢 پیام همگانی", callback_data="admin_broadcast"),
-        InlineKeyboardButton("🔄 ریست آمار", callback_data="admin_reset"),
-        InlineKeyboardButton("❌ بستن پنل", callback_data="admin_close")
+        InlineKeyboardButton("🎥 1080p", callback_data="quality_1080p"),
+        InlineKeyboardButton("🎥 720p", callback_data="quality_720p"),
+        InlineKeyboardButton("🎥 480p", callback_data="quality_480p"),
+        InlineKeyboardButton("🎥 360p", callback_data="quality_360p"),
+        InlineKeyboardButton("🎵 MP3", callback_data="quality_audio"),
+        InlineKeyboardButton("❌ لغو", callback_data="quality_cancel")
     )
-    
-    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
+    return markup
 
-@bot.callback_query_handler(func=lambda call: call.data.startswith('admin_'))
-def admin_callback(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید")
-        return
-
-    action = call.data.replace('admin_', '')
-
-    if action == "toggle":
-        current = db.get_setting("bot_status")
-        new = "OFF" if current == "ON" else "ON"
-        db.set_setting("bot_status", new)
-        bot.answer_callback_query(call.id, f"✅ وضعیت به {new} تغییر کرد")
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        admin_command(call.message)
-    
-    elif action == "stats":
-        stats = db.get_stats()
-        text = f"📊 **آمار کامل**\n\n"
-        text += f"👥 کل کاربران: {stats['total_users']}\n"
-        text += f"📥 کل دانلودها: {stats['total_downloads']}\n"
-        text += f"👥 کل گروه‌ها: {stats['total_groups']}\n"
-        text += f"🟢 کاربران فعال امروز: {stats['active_today']}\n"
-        text += f"👥 گروه‌های فعال امروز: {stats['active_groups']}\n"
-        text += f"🔒 کاربران بلاک شده: {stats['blocked']}\n"
-        text += f"🟢 وضعیت ربات: {'روشن' if stats['bot_status'] == 'ON' else 'خاموش'}"
-        
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif action == "users":
-        users = db.get_users(20)
-        text = "👥 **۲۰ کاربر آخر:**\n\n"
-        for u in users:
-            status = "🔒" if u[4] else "✅"
-            name = u[2] or u[1] or 'ناشناس'
-            text += f"{status} `{u[0]}` | {name} | دانلود: {u[3]}\n"
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif action == "downloads":
-        downloads = db.get_recent_downloads(20)
-        text = "📥 **۲۰ دانلود آخر:**\n\n"
-        for d in downloads:
-            text += f"👤 `{d[0]}` | {d[2]} | {d[3][:16]}\n"
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif action == "groups":
-        groups = db.get_groups(20)
-        text = "👥 **۲۰ گروه آخر:**\n\n"
-        for g in groups:
-            status = "✅" if g[4] else "❌"
-            text += f"{status} `{g[0]}` | {g[1][:30]} | {g[3][:16]}\n"
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif action == "block":
-        msg = bot.send_message(call.message.chat.id, "🔒 **آیدی عددی کاربر مورد نظر برای بلاک را بفرستید:**")
-        bot.register_next_step_handler(msg, block_user_handler)
-    
-    elif action == "unblock":
-        msg = bot.send_message(call.message.chat.id, "🔓 **آیدی عددی کاربر مورد نظر برای آنبلاک را بفرستید:**")
-        bot.register_next_step_handler(msg, unblock_user_handler)
-    
-    elif action == "broadcast":
-        msg = bot.send_message(call.message.chat.id, "📢 **متن پیام همگانی را بفرستید:**")
-        bot.register_next_step_handler(msg, broadcast_handler)
-    
-    elif action == "reset":
-        markup = InlineKeyboardMarkup(row_width=2)
-        markup.add(
-            InlineKeyboardButton("✅ بله", callback_data="admin_reset_confirm"),
-            InlineKeyboardButton("❌ خیر", callback_data="admin_back")
-        )
-        bot.edit_message_text("⚠️ **آیا از ریست آمار اطمینان دارید؟**", 
-                            call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-    
-    elif action == "reset_confirm":
-        db.cursor.execute("DELETE FROM downloads")
-        db.cursor.execute("UPDATE settings SET value='0' WHERE key IN ('total_downloads', 'total_users', 'total_groups')")
-        db.conn.commit()
-        bot.answer_callback_query(call.id, "✅ آمار ریست شد")
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        admin_command(call.message)
-    
-    elif action == "back":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        admin_command(call.message)
-    
-    elif action == "close":
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-
-def block_user_handler(message):
-    try:
-        user_id = int(message.text.strip())
-        db.block_user(user_id)
-        bot.reply_to(message, f"✅ کاربر `{user_id}` بلاک شد.", parse_mode="Markdown")
-        admin_command(message)
-    except:
-        bot.reply_to(message, "❌ خطا: آیدی نامعتبر")
-
-def unblock_user_handler(message):
-    try:
-        user_id = int(message.text.strip())
-        db.unblock_user(user_id)
-        bot.reply_to(message, f"✅ کاربر `{user_id}` آنبلاک شد.", parse_mode="Markdown")
-        admin_command(message)
-    except:
-        bot.reply_to(message, "❌ خطا: آیدی نامعتبر")
-
-def broadcast_handler(message):
-    msg_text = message.text
-    users = db.get_users(1000)
-    
-    status_msg = bot.reply_to(message, "📤 **در حال ارسال...**", parse_mode="Markdown")
-    
-    sent = 0
-    failed = 0
-    
-    for user in users:
-        if not user[4]:
-            try:
-                bot.send_message(user[0], f"📢 **پیام همگانی**\n\n{msg_text}", parse_mode="Markdown")
-                sent += 1
-            except:
-                failed += 1
-            time.sleep(0.05)
-    
-    bot.edit_message_text(f"✅ ارسال شد: {sent}\n❌ ناموفق: {failed}", 
-                        status_msg.chat.id, status_msg.message_id, parse_mode="Markdown")
-    admin_command(message)
-
-# ================= تلگرام =================
+# ================= هندلرها =================
 @bot.message_handler(commands=['start'])
 def start(message):
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
@@ -1562,54 +711,123 @@ def start(message):
         return
 
     welcome_text = (
-        f"🎬 سلام {message.from_user.first_name or message.from_user.username}!\n\n"
-        "من ربات **𝗧𝗢𝗣 𝗗𝗢𝗪𝗡𝗟𝗢𝗔𝗗𝗘𝗥** هستم 🤖\n"
-        "می‌تونم از **همه سایت‌ها** برات دانلود کنم!\n\n"
-        "✅ **سایت‌های پشتیبانی شده:**\n"
-        "• یوتیوب | تیک‌تاک | اینستاگرام\n"
-        "• توییتر | فیسبوک | پینترست\n"
-        "• آپارات | تلوبیون | فیلیمو\n"
-        "• تماشا | نماشا | کلیپس\n"
-        "• و هزاران سایت دیگه!\n\n"
+        f"🎬 **سلام {message.from_user.first_name or message.from_user.username}!**\n\n"
+        "به **قوی‌ترین ربات دانلود یوتیوب** خوش اومدی 🤖\n\n"
+        "✅ **۲۰ روش مختلف دانلود:**\n"
+        "• yt-dlp (subprocess و library)\n"
+        "• pytubefix (کیفیت بالا و پایین)\n"
+        "• youtube-dl\n"
+        "• pafy\n"
+        "• با پروکسی و Tor\n"
+        "• با کوکی\n"
+        "• با زیرنویس\n"
+        "• فقط صدا MP3\n"
+        "• و ۱۲ روش دیگر...\n\n"
         "✅ **حجم مجاز:** ۳۰۰ مگابایت\n"
-        "✅ **فرمت‌ها:** ویدیو، صدا، عکس، GIF\n"
-        "✅ **کیفیت:** بالاترین کیفیت موجود\n"
-        "✅ **۶ روش دانلود برای هر پلتفرم**\n"
-        "✅ **۱۰ روش دانلود برای اینستاگرام**\n\n"
-        "📌 **فقط کافیه لینک رو بفرستی!**"
+        "🎯 **۹۹.۹٪ تضمینی**\n\n"
+        "📌 **فقط کافیه لینک یوتیوب رو بفرستی!**"
     )
-    bot.reply_to(message, welcome_text)
+    bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "check_join")
 def check_join_callback(call):
     if db.check_membership(call.from_user.id):
         bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
-        bot.edit_message_text("✅ عضویت تأیید شد.", call.message.chat.id, call.message.message_id)
+        bot.delete_message(call.message.chat.id, call.message.message_id)
         start(call.message)
     else:
         bot.answer_callback_query(call.id, "❌ عضو نشده‌اید!", show_alert=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('quality_'))
+def quality_callback(call):
+    if call.data == "quality_cancel":
+        bot.edit_message_text("❌ عملیات لغو شد.", call.message.chat.id, call.message.message_id)
+        return
+    
+    quality_map = {
+        "quality_1080p": "best[height<=1080]",
+        "quality_720p": "best[height<=720]",
+        "quality_480p": "best[height<=480]",
+        "quality_360p": "best[height<=360]",
+        "quality_audio": "audio"
+    }
+    
+    quality = quality_map.get(call.data, "best")
+    url = call.message.text.split('\n')[-1]
+    
+    bot.edit_message_text(
+        f"🔄 **در حال دانلود با ۲۰ روش مختلف...**\n⏳ این فرآیند چند لحظه طول می‌کشد",
+        call.message.chat.id,
+        call.message.message_id,
+        parse_mode="Markdown"
+    )
+    
+    threading.Thread(
+        target=process_download,
+        args=(url, quality, call.message.chat.id, call.from_user.id, call.message.message_id),
+        daemon=True
+    ).start()
+
+def process_download(url, quality, chat_id, user_id, msg_id):
+    try:
+        result = downloader.download_with_all_methods(url, quality, chat_id, msg_id)
+        
+        if result:
+            with open(result['filename'], 'rb') as f:
+                if result['filename'].endswith('.mp3'):
+                    bot.send_audio(
+                        chat_id, 
+                        f,
+                        caption=f"✅ **دانلود کامل شد**\n📥 روش: {result['method']}\n📊 حجم: {result['size']/1024/1024:.1f}MB",
+                        timeout=120
+                    )
+                else:
+                    bot.send_video(
+                        chat_id, 
+                        f,
+                        caption=f"✅ **دانلود کامل شد**\n📥 روش: {result['method']}\n📊 حجم: {result['size']/1024/1024:.1f}MB",
+                        timeout=120
+                    )
+            
+            os.remove(result['filename'])
+            db.add_download(user_id, result['method'])
+            
+            bot.edit_message_text(
+                f"✅ **دانلود با موفقیت انجام شد!**\n📥 روش: {result['method']}",
+                chat_id,
+                msg_id,
+                parse_mode="Markdown"
+            )
+        else:
+            bot.edit_message_text(
+                "❌ **خطا در دانلود!**\nهمه ۲۰ روش امتحان شدند اما موفق نبود.",
+                chat_id,
+                msg_id,
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        bot.edit_message_text(
+            f"❌ **خطا:**\n`{str(e)[:200]}`",
+            chat_id,
+            msg_id,
+            parse_mode="Markdown"
+        )
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
     if not message.text.startswith(('http://', 'https://')):
         return
 
-    if db.get_setting("bot_status") == "OFF":
-        bot.reply_to(message, "⛔ ربات خاموش است")
-        return
     if db.is_blocked(message.from_user.id):
         bot.reply_to(message, "⛔ شما بلاک هستید")
         return
 
     db.add_user(message.from_user.id, message.from_user.username, message.from_user.first_name)
-    
-    if message.chat.type in ["group", "supergroup"]:
-        db.add_group(message.chat.id, message.chat.title)
 
     if not db.check_membership(message.from_user.id):
         bot.reply_to(
             message,
-            "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
+            "🔒 **لطفاً ابتدا در کانال‌ها عضو شوید:**",
             reply_markup=force_join_markup(),
             parse_mode="Markdown"
         )
@@ -1618,20 +836,90 @@ def handle_message(message):
     urls = extract_urls(message.text)
     if not urls:
         return
+    
     url = urls[0]
     
-    # تشخیص لینک کوتاه
-    resolved_url = resolve_short_url(url)
-    if resolved_url != url:
-        bot.send_message(message.chat.id, "🔗 **لینک کوتاه تشخیص داده شد.**", parse_mode="Markdown")
-        url = resolved_url
+    if not is_youtube_url(url):
+        bot.reply_to(
+            message,
+            "❌ **لطفاً فقط لینک یوتیوب ارسال کنید**",
+            parse_mode="Markdown"
+        )
+        return
     
-    bot.reply_to(message, "✅ **لینک دریافت شد، شروع دانلود با موتور فوق پیشرفته...**", parse_mode="Markdown")
-    threading.Thread(
-        target=download_media,
-        args=(url, message.chat.id, message.from_user.id, message.chat.type in ["group", "supergroup"]),
-        daemon=True
-    ).start()
+    info_msg = bot.reply_to(message, "🔄 **در حال دریافت اطلاعات...**", parse_mode="Markdown")
+    
+    # استفاده از yt-dlp برای گرفتن اطلاعات
+    try:
+        cmd = ['yt-dlp', '--dump-json', '--no-playlist', '--quiet', url]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            info = json.loads(result.stdout)
+            info_text = (
+                f"📹 **اطلاعات ویدیو**\n\n"
+                f"📌 عنوان: `{info.get('title', 'بدون عنوان')[:50]}...`\n"
+                f"⏱ مدت: {format_duration(info.get('duration', 0))}\n"
+                f"👤 کانال: {info.get('uploader', 'ناشناس')}\n"
+                f"👁 بازدید: {info.get('view_count', 0):,}\n\n"
+                f"⬇️ **کیفیت مورد نظر را انتخاب کنید:**"
+            )
+            
+            bot.edit_message_text(
+                info_text,
+                info_msg.chat.id,
+                info_msg.message_id,
+                reply_markup=quality_keyboard(),
+                parse_mode="Markdown"
+            )
+        else:
+            bot.edit_message_text(
+                "❌ **خطا در دریافت اطلاعات ویدیو!**",
+                info_msg.chat.id,
+                info_msg.message_id,
+                parse_mode="Markdown"
+            )
+    except:
+        bot.edit_message_text(
+            "❌ **خطا در دریافت اطلاعات ویدیو!**",
+            info_msg.chat.id,
+            info_msg.message_id,
+            parse_mode="Markdown"
+        )
+
+# ================= پنل ادمین =================
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⛔ دسترسی ندارید!")
+        return
+    
+    stats = db.cursor.execute("SELECT COUNT(*), SUM(download_count) FROM users").fetchone()
+    total_users = stats[0] or 0
+    total_downloads = stats[1] or 0
+    
+    text = f"👑 **پنل مدیریت**\n\n"
+    text += f"👥 کاربران: {total_users}\n"
+    text += f"📥 دانلودها: {total_downloads}\n"
+    text += f"🟢 روش‌ها: ۲۰ روش فعال\n"
+    text += f"📚 کتابخانه‌ها:\n"
+    text += f"   ✅ yt-dlp: {'نصب' if YT_DLP_AVAILABLE else 'نصب نیست'}\n"
+    text += f"   ✅ pytubefix: {'نصب' if PYTUBEFIX_AVAILABLE else 'نصب نیست'}\n"
+    text += f"   ✅ youtube-dl: {'نصب' if YOUTUBE_DL_AVAILABLE else 'نصب نیست'}\n"
+    text += f"   ✅ pafy: {'نصب' if PAFY_AVAILABLE else 'نصب نیست'}\n"
+    text += f"   ✅ YouTube API: {'فعال' if YOUTUBE_API_KEY != 'AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAA' else 'غیرفعال'}\n"
+    
+    bot.send_message(message.chat.id, text, parse_mode="Markdown")
+
+@bot.message_handler(commands=['stats'])
+def stats_command(message):
+    stats = db.cursor.execute("SELECT download_method, COUNT(*) FROM users WHERE download_method IS NOT NULL GROUP BY download_method").fetchall()
+    if stats:
+        text = "📊 **آمار روش‌های دانلود:**\n\n"
+        for method, count in stats:
+            text += f"• {method}: {count} بار\n"
+        bot.reply_to(message, text, parse_mode="Markdown")
+    else:
+        bot.reply_to(message, "📊 هنوز آماری ثبت نشده است.")
 
 # ================= وب‌هوک =================
 app = Flask(__name__)
@@ -1645,24 +933,43 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "ربات فعال است - از دستور /admin استفاده کنید"
+    return "ربات دانلود یوتیوب با ۲۰ روش و ۵ کتابخانه"
 
 # ================= اجرا =================
 if __name__ == "__main__":
     print("="*70)
-    print("🚀 راه‌اندازی ربات قدرتمند دانلود نسخه فوق پیشرفته با ۶ روش برای هر پلتفرم...")
+    print("🎬 ربات دانلود یوتیوب با ۲۰ روش و ۵ کتابخانه")
     print("="*70)
-    print(f"👤 آیدی ادمین: {ADMIN_ID}")
-    print(f"📁 مسیر دانلود: {DOWNLOAD_PATH}")
-    print(f"📊 حجم مجاز: {MAX_FILE_SIZE/1024/1024}MB")
-    print("✅ یوتیوب: ۶ روش دانلود")
-    print("✅ اینستاگرام: ۱۰ روش دانلود (cobalt.tools، SaveInsta، IGDownloader، SnapInsta، yt-dlp، استخراج مستقیم، RapidAPI، Instaloader، Instagram Video API، Direct Download)")
-    print("✅ پینترست: ۶ روش دانلود")
-    print("✅ تیک‌تاک: ۶ روش دانلود")
-    print("✅ سایر سایت‌ها: ۶ روش دانلود")
+    print("📚 کتابخانه‌های نصب شده:")
+    print(f"   ✅ yt-dlp: {'نصب' if YT_DLP_AVAILABLE else 'نصب نیست'}")
+    print(f"   ✅ pytubefix: {'نصب' if PYTUBEFIX_AVAILABLE else 'نصب نیست'}")
+    print(f"   ✅ youtube-dl: {'نصب' if YOUTUBE_DL_AVAILABLE else 'نصب نیست'}")
+    print(f"   ✅ pafy: {'نصب' if PAFY_AVAILABLE else 'نصب نیست'}")
+    print(f"   ✅ YouTube API: {'فعال' if YOUTUBE_API_KEY != 'AIzaSyAAAAAAAAAAAAAAAAAAAAAAAAAAA' else 'غیرفعال'}")
+    print("="*70)
+    print("🎯 ۲۰ روش دانلود فعال:")
+    print("   1. yt-dlp subprocess")
+    print("   2. yt-dlp library")
+    print("   3. pytubefix")
+    print("   4. youtube-dl")
+    print("   5. pafy")
+    print("   6. yt-dlp cookies")
+    print("   7. yt-dlp proxy")
+    print("   8. yt-dlp Tor")
+    print("   9. yt-dlp low quality")
+    print("   10. yt-dlp format")
+    print("   11. pytubefix low")
+    print("   12. pytubefix audio")
+    print("   13. yt-dlp audio")
+    print("   14. youtube-dl audio")
+    print("   15. yt-dlp playlist")
+    print("   16. yt-dlp with subs")
+    print("   17. yt-dlp rate limit")
+    print("   18. yt-dlp useragent")
+    print("   19. YouTube API")
+    print("   20. yt-dlp retry")
     print("="*70)
     
-    # پاکسازی پوشه دانلود
     for f in os.listdir(DOWNLOAD_PATH):
         try:
             os.remove(os.path.join(DOWNLOAD_PATH, f))
@@ -1672,11 +979,9 @@ if __name__ == "__main__":
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
-    print("✅ Webhook تنظیم شد")
-    print(f"🌐 Webhook: {WEBHOOK_URL}")
-    print("✅ پنل ادمین با دستور /admin فعال است")
-    print("✅ پشتیبانی از تمام سایت‌ها با ۶ روش مختلف فعال شد")
-    print("✅ اینستاگرام با ۱۰ روش ویژه ارتقا یافت")
+    
+    print(f"✅ Webhook: {WEBHOOK_URL}")
+    print("✅ ربات با ۲۰ روش و ۵ کتابخانه فعال شد!")
     print("="*70)
     
     app.run(host="0.0.0.0", port=PORT)
