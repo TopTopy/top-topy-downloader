@@ -5,15 +5,19 @@ import time
 import threading
 import json
 import subprocess
+import random
+from datetime import datetime
 from flask import Flask, request
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
+import requests
+from urllib.parse import urlparse
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
-MAX_FILE_SIZE = 500 * 1024 * 1024  # افزایش به 500 مگابایت
+MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
@@ -25,7 +29,6 @@ app = Flask(__name__)
 
 user_links = {}
 active_downloads = {}
-download_progress = {}
 lock = threading.Lock()
 
 # ================= User-Agent های مختلف =================
@@ -37,21 +40,59 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
+# ================= تشخیص پلتفرم =================
+def detect_platform(url):
+    url = url.lower()
+    platforms = {
+        'youtube': ['youtube.com', 'youtu.be'],
+        'instagram': ['instagram.com', 'instagr.am'],
+        'tiktok': ['tiktok.com', 'vt.tiktok.com'],
+        'twitter': ['twitter.com', 'x.com'],
+        'facebook': ['facebook.com', 'fb.com', 'fb.watch'],
+        'pinterest': ['pinterest.com', 'pin.it'],
+        'reddit': ['reddit.com'],
+        'twitch': ['twitch.tv'],
+        'vimeo': ['vimeo.com'],
+        'dailymotion': ['dailymotion.com'],
+        'soundcloud': ['soundcloud.com'],
+        'spotify': ['spotify.com'],
+        'aparat': ['aparat.com'],
+        'telewebion': ['telewebion.com'],
+        'filimo': ['filimo.com'],
+        'namasha': ['namasha.com'],
+        'clips': ['clips.ir'],
+        'tamasha': ['tamasha.com'],
+    }
+    
+    for platform, domains in platforms.items():
+        for domain in domains:
+            if domain in url:
+                return platform.capitalize()
+    return "Other"
+
 # ================= ابزار لینک =================
 def extract_url(text):
     urls = re.findall(r'https?://\S+', text)
     return urls[0] if urls else None
-
-def is_youtube(url):
-    return any(x in url for x in ['youtube.com', 'youtu.be'])
 
 def clean_url(url):
     url = re.sub(r'\?si=[^&]+', '', url)
     url = re.sub(r'&si=[^&]+', '', url)
     return url
 
-# ================= موتور دانلود فوق پیشرفته با ۱۵ روش =================
-class AdvancedDownloader:
+def resolve_short_url(url):
+    try:
+        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly']
+        parsed = urlparse(url)
+        if any(domain in parsed.netloc for domain in short_domains):
+            response = requests.head(url, allow_redirects=True, timeout=10)
+            return response.url
+        return url
+    except:
+        return url
+
+# ================= موتور دانلود جهانی با ۱۵ روش =================
+class UniversalDownloader:
     def __init__(self):
         self.methods = [
             self.method_1_ytdlp_best,
@@ -71,10 +112,10 @@ class AdvancedDownloader:
             self.method_15_ytdlp_ultimate,
         ]
         self.method_names = [
-            "yt-dlp بهترین کیفیت",
-            "yt-dlp 720p",
-            "yt-dlp 480p",
-            "yt-dlp 360p",
+            "بهترین کیفیت",
+            "کیفیت 720p",
+            "کیفیت 480p",
+            "کیفیت 360p",
             "دانلود صوتی",
             "کلاینت اندروید",
             "کلاینت iOS",
@@ -88,7 +129,7 @@ class AdvancedDownloader:
             "التمیت روش نهایی",
         ]
     
-    def _download_with_ydl(self, url, format_spec, quality_name, is_audio=False):
+    def _download_with_ydl(self, url, format_spec, method_name, is_audio=False):
         """تابع پایه برای دانلود با yt-dlp"""
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"%(title)s_{unique}.%(ext)s")
@@ -128,63 +169,69 @@ class AdvancedDownloader:
                     filepath = os.path.splitext(filepath)[0] + '.mp3'
                 
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': quality_name, 'size': os.path.getsize(filepath)}
-        except:
-            return None
+                    return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath)}
+        except Exception as e:
+            print(f"خطا در {method_name}: {e}")
         return None
     
-    def _download_with_subprocess(self, url, format_spec, quality_name):
+    def _download_with_subprocess(self, url, format_spec, method_name, is_audio=False):
         """تابع پایه برای دانلود با subprocess"""
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"video_{unique}.mp4")
         
-        try:
+        if is_audio:
+            output = os.path.join(DOWNLOAD_PATH, f"audio_{unique}.mp3")
+            cmd = [
+                'yt-dlp',
+                '-f', 'bestaudio',
+                '--extract-audio',
+                '--audio-format', 'mp3',
+                '-o', output,
+                '--no-playlist',
+                '--quiet',
+                '--user-agent', random.choice(USER_AGENTS),
+                url
+            ]
+        else:
+            output = os.path.join(DOWNLOAD_PATH, f"video_{unique}.mp4")
             cmd = [
                 'yt-dlp',
                 '-f', format_spec,
                 '-o', output,
                 '--no-playlist',
                 '--quiet',
-                '--no-warnings',
                 '--user-agent', random.choice(USER_AGENTS),
                 url
             ]
-            
+        
+        try:
             result = subprocess.run(cmd, capture_output=True, timeout=300)
-            
             if result.returncode == 0 and os.path.exists(output):
-                return {'file': output, 'method': quality_name, 'size': os.path.getsize(output)}
+                return {'file': output, 'method': method_name, 'size': os.path.getsize(output)}
         except:
             pass
         return None
     
-    # روش ۱: yt-dlp بهترین کیفیت
     def method_1_ytdlp_best(self, url):
-        return self._download_with_ydl(url, 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best', 'روش 1')
+        return self._download_with_ydl(url, 'bestvideo+bestaudio/best', 'روش 1')
     
-    # روش ۲: yt-dlp 720p
     def method_2_ytdlp_720p(self, url):
-        return self._download_with_ydl(url, 'best[height<=720][ext=mp4]/best[ext=mp4]/best', 'روش 2')
+        return self._download_with_ydl(url, 'best[height<=720]', 'روش 2')
     
-    # روش ۳: yt-dlp 480p
     def method_3_ytdlp_480p(self, url):
-        return self._download_with_ydl(url, 'best[height<=480][ext=mp4]/best[ext=mp4]/best', 'روش 3')
+        return self._download_with_ydl(url, 'best[height<=480]', 'روش 3')
     
-    # روش ۴: yt-dlp 360p
     def method_4_ytdlp_360p(self, url):
-        return self._download_with_ydl(url, 'best[height<=360][ext=mp4]/worst[ext=mp4]/worst', 'روش 4')
+        return self._download_with_ydl(url, 'best[height<=360]', 'روش 4')
     
-    # روش ۵: دانلود صوتی
     def method_5_audio(self, url):
-        return self._download_with_ydl(url, 'bestaudio/best', 'روش 5', is_audio=True)
+        return self._download_with_ydl(url, 'bestaudio', 'روش 5', is_audio=True)
     
-    # روش ۶: کلاینت اندروید
     def method_6_ytdlp_android(self, url):
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"android_{unique}.%(ext)s")
         
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best',
             'outtmpl': output,
             'noplaylist': True,
             'quiet': True,
@@ -203,13 +250,12 @@ class AdvancedDownloader:
             pass
         return None
     
-    # روش ۷: کلاینت iOS
     def method_7_ytdlp_ios(self, url):
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"ios_{unique}.%(ext)s")
         
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best',
             'outtmpl': output,
             'noplaylist': True,
             'quiet': True,
@@ -228,31 +274,9 @@ class AdvancedDownloader:
             pass
         return None
     
-    # روش ۸: کلاینت وب
     def method_8_ytdlp_web(self, url):
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"web_{unique}.%(ext)s")
-        
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',
-            'outtmpl': output,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'user_agent': USER_AGENTS[0],
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filepath = ydl.prepare_filename(info)
-                if os.path.exists(filepath):
-                    return {'file': filepath, 'method': 'روش 8', 'size': os.path.getsize(filepath)}
-        except:
-            pass
-        return None
+        return self._download_with_ydl(url, 'best', 'روش 8')
     
-    # روش ۹: با کوکی (اگر وجود داشته باشد)
     def method_9_ytdlp_cookie(self, url):
         if not os.path.exists('cookies.txt'):
             return None
@@ -261,7 +285,7 @@ class AdvancedDownloader:
         output = os.path.join(DOWNLOAD_PATH, f"cookie_{unique}.%(ext)s")
         
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best',
             'outtmpl': output,
             'noplaylist': True,
             'quiet': True,
@@ -279,13 +303,12 @@ class AdvancedDownloader:
             pass
         return None
     
-    # روش ۱۰: عبور از محدودیت جغرافیایی
     def method_10_ytdlp_bypass(self, url):
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"bypass_{unique}.%(ext)s")
         
         ydl_opts = {
-            'format': 'best[ext=mp4]/best',
+            'format': 'best',
             'outtmpl': output,
             'noplaylist': True,
             'quiet': True,
@@ -304,47 +327,17 @@ class AdvancedDownloader:
             pass
         return None
     
-    # روش ۱۱: subprocess بهترین کیفیت
     def method_11_subprocess_best(self, url):
-        return self._download_with_subprocess(url, 'best[ext=mp4]', 'روش 11')
+        return self._download_with_subprocess(url, 'best', 'روش 11')
     
-    # روش ۱۲: subprocess 720p
     def method_12_subprocess_720p(self, url):
-        return self._download_with_subprocess(url, 'best[height<=720][ext=mp4]', 'روش 12')
+        return self._download_with_subprocess(url, 'best[height<=720]', 'روش 12')
     
-    # روش ۱۳: subprocess صوتی
     def method_13_subprocess_audio(self, url):
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"audio_{unique}.mp3")
-        
-        try:
-            cmd = [
-                'yt-dlp',
-                '-f', 'bestaudio',
-                '--extract-audio',
-                '--audio-format', 'mp3',
-                '-o', output,
-                '--no-playlist',
-                '--quiet',
-                url
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            
-            if result.returncode == 0 and os.path.exists(output):
-                return {'file': output, 'method': 'روش 13', 'size': os.path.getsize(output)}
-        except:
-            pass
-        return None
+        return self._download_with_subprocess(url, 'bestaudio', 'روش 13', is_audio=True)
     
-    # روش ۱۴: fallback نهایی
     def method_14_ytdlp_fallback(self, url):
-        formats = [
-            'worst[ext=mp4]',
-            'worst',
-            'best',
-        ]
-        
+        formats = ['worst', 'worstaudio', 'best']
         for fmt in formats:
             try:
                 result = self._download_with_ydl(url, fmt, 'روش 14')
@@ -354,7 +347,6 @@ class AdvancedDownloader:
                 continue
         return None
     
-    # روش ۱۵: التیمیت روش نهایی
     def method_15_ytdlp_ultimate(self, url):
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"ultimate_{unique}.mp4")
@@ -376,70 +368,58 @@ class AdvancedDownloader:
             ]
             
             result = subprocess.run(cmd, capture_output=True, timeout=300)
-            
             if result.returncode == 0 and os.path.exists(output):
                 return {'file': output, 'method': 'روش 15', 'size': os.path.getsize(output)}
         except:
             pass
         return None
     
-    def download(self, url, quality, progress_callback=None):
+    def download(self, url, progress_callback=None):
         """تلاش با همه ۱۵ روش"""
-        
-        # انتخاب روش‌های مناسب بر اساس کیفیت
-        if quality == 'audio':
-            methods_to_try = [5, 13]  # فقط روش‌های صوتی
-        else:
-            methods_to_try = range(15)  # همه روش‌ها
-        
-        for i in methods_to_try:
-            method = self.methods[i]
+        for i, method in enumerate(self.methods):
             method_name = self.method_names[i]
             
             if progress_callback:
-                progress_callback(f"🔄 تلاش با {method_name}...")
+                progress_callback(f"🔄 تلاش با روش {i+1}: {method_name}...")
             
             try:
                 result = method(url)
                 if result:
                     return result
-            except:
-                continue
+            except Exception as e:
+                print(f"خطا در روش {i+1}: {e}")
             
             time.sleep(1)
         
         return None
 
 # ================= ایجاد نمونه از دانلودر =================
-downloader = AdvancedDownloader()
+downloader = UniversalDownloader()
 
-# ================= کیبورد کیفیت =================
-def quality_keyboard():
+# ================= کیبورد =================
+def platform_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🎥 بهترین کیفیت", callback_data="q_best"),
-        InlineKeyboardButton("720p", callback_data="q_720"),
-        InlineKeyboardButton("480p", callback_data="q_480"),
-        InlineKeyboardButton("360p", callback_data="q_360"),
-        InlineKeyboardButton("🎵 فقط صدا", callback_data="q_audio"),
-        InlineKeyboardButton("❌ لغو", callback_data="q_cancel")
+        InlineKeyboardButton("🎥 ویدیو", callback_data="video"),
+        InlineKeyboardButton("🎵 فقط صدا", callback_data="audio"),
+        InlineKeyboardButton("❌ لغو", callback_data="cancel")
     )
     return markup
 
 # ================= استارت =================
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(
-        message,
-        "🎬 **ربات دانلود یوتیوب - نسخه التیمیت**\n\n"
+    welcome_text = (
+        "🎬 **ربات دانلود جهانی - نسخه التیمیت**\n\n"
         "✅ **۱۵ روش مختلف دانلود**\n"
-        "✅ پشتیبانی از Shorts و ویدیوهای معمولی\n"
-        "✅ عبور از محدودیت سنی و جغرافیایی\n"
+        "✅ پشتیبانی از تمام سایت‌ها\n"
+        "✅ یوتیوب | اینستاگرام | تیک‌تاک | توییتر | فیسبوک\n"
+        "✅ آپارات | تلوبیون | فیلیمو | و هزاران سایت دیگر\n"
         "✅ حجم مجاز: ۵۰۰ مگابایت\n"
         "✅ **۱۰۰٪ تضمینی**\n\n"
-        "📌 **فقط کافیه لینک یوتیوب رو بفرستی!**",
-        parse_mode="Markdown"
+        "📌 **فقط کافیه لینک رو بفرستی!**"
     )
+    bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
 # ================= دریافت لینک =================
 @bot.message_handler(content_types=['text'])
@@ -454,28 +434,31 @@ def handle(message):
     if not url:
         return
 
-    if not is_youtube(url):
-        bot.reply_to(message, "❌ فقط لینک یوتیوب بفرست!")
-        return
+    # تشخیص لینک کوتاه
+    resolved_url = resolve_short_url(url)
+    if resolved_url != url:
+        bot.send_message(message.chat.id, "🔗 **لینک کوتاه تشخیص داده شد.**", parse_mode="Markdown")
+        url = resolved_url
 
-    url = clean_url(url)
+    platform = detect_platform(url)
     user_links[user_id] = url
     
     bot.reply_to(
         message, 
-        "📥 **کیفیت مورد نظر رو انتخاب کن:**\n\n"
-        "🎯 ۱۵ روش مختلف برای دانلود آماده است!", 
-        reply_markup=quality_keyboard(), 
+        f"📥 **پلتفرم: {platform}**\n\n"
+        f"🎯 ۱۵ روش مختلف برای دانلود آماده است!\n"
+        f"لطفاً نوع دانلود رو انتخاب کن:", 
+        reply_markup=platform_keyboard(), 
         parse_mode="Markdown"
     )
 
-# ================= انتخاب کیفیت =================
-@bot.callback_query_handler(func=lambda call: call.data.startswith("q_"))
-def quality_selected(call):
+# ================= انتخاب نوع دانلود =================
+@bot.callback_query_handler(func=lambda call: True)
+def handle_callback(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
 
-    if call.data == "q_cancel":
+    if call.data == "cancel":
         bot.edit_message_text("❌ عملیات لغو شد.", chat_id, call.message.message_id)
         return
 
@@ -483,9 +466,7 @@ def quality_selected(call):
         bot.answer_callback_query(call.id, "⏳ صبر کن دانلود قبلی تموم شه!")
         return
 
-    quality = call.data.replace("q_", "")
     url = user_links.get(user_id)
-
     if not url:
         bot.answer_callback_query(call.id, "❌ خطا: لینک یافت نشد!")
         return
@@ -514,7 +495,7 @@ def quality_selected(call):
             with lock:
                 active_downloads[user_id] = time.time()
 
-            result = downloader.download(url, quality, progress_callback)
+            result = downloader.download(url, progress_callback)
 
             if result and os.path.exists(result['file']):
                 file_size = os.path.getsize(result['file'])
@@ -527,7 +508,7 @@ def quality_selected(call):
                 progress_callback(f"📤 **در حال آپلود...**\n📊 حجم: {file_size/1024/1024:.1f}MB")
 
                 with open(result['file'], 'rb') as f:
-                    if quality == 'audio' or result['file'].endswith('.mp3'):
+                    if result['file'].endswith('.mp3'):
                         bot.send_audio(
                             chat_id, 
                             f,
@@ -603,19 +584,6 @@ def admin_panel(message):
     text += f"📦 yt-dlp نسخه: {version}\n"
     text += f"💾 حجم مجاز: ۵۰۰ مگابایت\n"
     
-    # لیست روش‌ها
-    methods = [
-        "1. yt-dlp بهترین کیفیت", "2. yt-dlp 720p", "3. yt-dlp 480p", "4. yt-dlp 360p",
-        "5. دانلود صوتی", "6. کلاینت اندروید", "7. کلاینت iOS", "8. کلاینت وب",
-        "9. با کوکی", "10. عبور از محدودیت", "11. subprocess بهترین", "12. subprocess 720p",
-        "13. subprocess صوتی", "14. fallback نهایی", "15. التیمیت روش نهایی"
-    ]
-    
-    text += "\n📋 **روش‌های فعال:**\n"
-    for i, method in enumerate(methods[:5], 1):
-        text += f"{method}\n"
-    text += "..."
-    
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 # ================= وبهوک =================
@@ -628,28 +596,15 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "ربات دانلود یوتیوب با ۱۵ روش - ۱۰۰٪ تضمینی"
+    return "ربات دانلود جهانی با ۱۵ روش - ۱۰۰٪ تضمینی"
 
 if __name__ == "__main__":
     print("="*70)
-    print("🎬 ربات دانلود یوتیوب - نسخه التیمیت با ۱۵ روش")
+    print("🎬 ربات دانلود جهانی - نسخه التیمیت با ۱۵ روش")
     print("="*70)
-    print("✅ ۱۵ روش مختلف دانلود:")
-    print("   1. yt-dlp بهترین کیفیت")
-    print("   2. yt-dlp 720p")
-    print("   3. yt-dlp 480p")
-    print("   4. yt-dlp 360p")
-    print("   5. دانلود صوتی")
-    print("   6. کلاینت اندروید")
-    print("   7. کلاینت iOS")
-    print("   8. کلاینت وب")
-    print("   9. با کوکی")
-    print("   10. عبور از محدودیت")
-    print("   11. subprocess بهترین")
-    print("   12. subprocess 720p")
-    print("   13. subprocess صوتی")
-    print("   14. fallback نهایی")
-    print("   15. التیمیت روش نهایی")
+    print("✅ ۱۵ روش مختلف دانلود")
+    print("✅ پشتیبانی از تمام سایت‌ها")
+    print("✅ حجم مجاز: ۵۰۰ مگابایت")
     print("="*70)
     print("🎯 **۱۰۰٪ تضمینی**")
     print("="*70)
