@@ -21,10 +21,6 @@ MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
-REQUIRED_CHANNELS = [
-    ("@top_topy_downloader", "https://t.me/top_topy_downloader"),
-    ("@IdTOP_TOPY", "https://t.me/IdTOP_TOPY")
-]
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
@@ -86,34 +82,14 @@ def clean_url(url):
 
 def resolve_short_url(url):
     try:
-        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly', 'pin.it']
+        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly']
         parsed = urlparse(url)
         if any(domain in parsed.netloc for domain in short_domains):
-            response = requests.head(url, allow_redirects=True, timeout=10, headers={'User-Agent': random.choice(USER_AGENTS)})
+            response = requests.head(url, allow_redirects=True, timeout=10)
             return response.url
         return url
     except:
         return url
-
-# ================= بررسی عضویت =================
-def check_membership(user_id):
-    """بررسی عضویت کاربر در کانال‌های اجباری"""
-    try:
-        for username, _ in REQUIRED_CHANNELS:
-            member = bot.get_chat_member(username, user_id)
-            if member.status not in ['member', 'administrator', 'creator']:
-                return False
-        return True
-    except:
-        return False
-
-def force_join_markup():
-    """کیبورد عضویت اجباری"""
-    markup = InlineKeyboardMarkup(row_width=1)
-    for name, link in REQUIRED_CHANNELS:
-        markup.add(InlineKeyboardButton(f"📢 عضویت در {name}", url=link))
-    markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
-    return markup
 
 # ================= موتور دانلود جهانی با ۱۵ روش =================
 class UniversalDownloader:
@@ -398,7 +374,7 @@ class UniversalDownloader:
             pass
         return None
     
-    def download(self, url, media_type='video', progress_callback=None):
+    def download(self, url, progress_callback=None):
         """تلاش با همه ۱۵ روش"""
         for i, method in enumerate(self.methods):
             method_name = self.method_names[i]
@@ -421,12 +397,11 @@ class UniversalDownloader:
 downloader = UniversalDownloader()
 
 # ================= کیبورد =================
-def main_keyboard():
+def platform_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🎥 دانلود ویدیو", callback_data="video"),
+        InlineKeyboardButton("🎥 ویدیو", callback_data="video"),
         InlineKeyboardButton("🎵 فقط صدا", callback_data="audio"),
-        InlineKeyboardButton("📊 وضعیت", callback_data="status"),
         InlineKeyboardButton("❌ لغو", callback_data="cancel")
     )
     return markup
@@ -434,54 +409,22 @@ def main_keyboard():
 # ================= استارت =================
 @bot.message_handler(commands=['start'])
 def start(message):
-    user_id = message.from_user.id
-    
-    # بررسی عضویت اجباری
-    if not check_membership(user_id):
-        bot.reply_to(
-            message,
-            "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
-            reply_markup=force_join_markup(),
-            parse_mode="Markdown"
-        )
-        return
-    
     welcome_text = (
         "🎬 **ربات دانلود جهانی - نسخه التیمیت**\n\n"
         "✅ **۱۵ روش مختلف دانلود**\n"
         "✅ پشتیبانی از تمام سایت‌ها\n"
         "✅ یوتیوب | اینستاگرام | تیک‌تاک | توییتر | فیسبوک\n"
-        "✅ پینترست | آپارات | تلوبیون | فیلیمو\n"
+        "✅ آپارات | تلوبیون | فیلیمو | و هزاران سایت دیگر\n"
         "✅ حجم مجاز: ۵۰۰ مگابایت\n"
         "✅ **۱۰۰٪ تضمینی**\n\n"
         "📌 **فقط کافیه لینک رو بفرستی!**"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
-# ================= بررسی عضویت =================
-@bot.callback_query_handler(func=lambda call: call.data == "check_join")
-def check_join_callback(call):
-    if check_membership(call.from_user.id):
-        bot.answer_callback_query(call.id, "✅ عضویت تأیید شد!")
-        bot.delete_message(call.message.chat.id, call.message.message_id)
-        start(call.message)
-    else:
-        bot.answer_callback_query(call.id, "❌ عضو نشده‌اید!", show_alert=True)
-
 # ================= دریافت لینک =================
 @bot.message_handler(content_types=['text'])
 def handle(message):
     user_id = message.from_user.id
-    
-    # بررسی عضویت اجباری
-    if not check_membership(user_id):
-        bot.reply_to(
-            message,
-            "🔒 **برای استفاده از ربات، لطفاً ابتدا در کانال‌های زیر عضو شوید:**",
-            reply_markup=force_join_markup(),
-            parse_mode="Markdown"
-        )
-        return
 
     if user_id in active_downloads:
         bot.reply_to(message, "⏳ یک دانلود در حال انجام است... لطفاً صبر کنید.")
@@ -489,7 +432,6 @@ def handle(message):
 
     url = extract_url(message.text)
     if not url:
-        bot.reply_to(message, "❌ لینکی یافت نشد!")
         return
 
     # تشخیص لینک کوتاه
@@ -506,7 +448,7 @@ def handle(message):
         f"📥 **پلتفرم: {platform}**\n\n"
         f"🎯 ۱۵ روش مختلف برای دانلود آماده است!\n"
         f"لطفاً نوع دانلود رو انتخاب کن:", 
-        reply_markup=main_keyboard(), 
+        reply_markup=platform_keyboard(), 
         parse_mode="Markdown"
     )
 
@@ -518,22 +460,12 @@ def handle_callback(call):
 
     if call.data == "cancel":
         bot.edit_message_text("❌ عملیات لغو شد.", chat_id, call.message.message_id)
-        if user_id in user_links:
-            del user_links[user_id]
-        return
-    
-    if call.data == "status":
-        if user_id in active_downloads:
-            bot.answer_callback_query(call.id, f"⏳ دانلود در حال انجام است...")
-        else:
-            bot.answer_callback_query(call.id, "✅ آماده دریافت لینک جدید")
         return
 
     if user_id in active_downloads:
         bot.answer_callback_query(call.id, "⏳ صبر کن دانلود قبلی تموم شه!")
         return
 
-    media_type = call.data  # 'video' یا 'audio'
     url = user_links.get(user_id)
     if not url:
         bot.answer_callback_query(call.id, "❌ خطا: لینک یافت نشد!")
@@ -563,7 +495,7 @@ def handle_callback(call):
             with lock:
                 active_downloads[user_id] = time.time()
 
-            result = downloader.download(url, media_type, progress_callback)
+            result = downloader.download(url, progress_callback)
 
             if result and os.path.exists(result['file']):
                 file_size = os.path.getsize(result['file'])
@@ -576,7 +508,7 @@ def handle_callback(call):
                 progress_callback(f"📤 **در حال آپلود...**\n📊 حجم: {file_size/1024/1024:.1f}MB")
 
                 with open(result['file'], 'rb') as f:
-                    if result['file'].endswith('.mp3') or media_type == 'audio':
+                    if result['file'].endswith('.mp3'):
                         bot.send_audio(
                             chat_id, 
                             f,
@@ -646,16 +578,11 @@ def admin_panel(message):
     except:
         version = "نامشخص"
     
-    # آمار دانلودها
-    total_downloads = len([f for f in os.listdir(DOWNLOAD_PATH) if os.path.isfile(os.path.join(DOWNLOAD_PATH, f))])
-    
     text = f"👑 **پنل مدیریت**\n\n"
     text += f"✅ **۱۵ روش دانلود فعال**\n"
     text += f"📊 دانلودهای هم‌زمان: {len(active_downloads)}\n"
-    text += f"📦 کل دانلودها: {total_downloads}\n"
     text += f"📦 yt-dlp نسخه: {version}\n"
     text += f"💾 حجم مجاز: ۵۰۰ مگابایت\n"
-    text += f"👤 ادمین: {ADMIN_ID}\n"
     
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
@@ -678,25 +605,10 @@ if __name__ == "__main__":
     print("✅ ۱۵ روش مختلف دانلود")
     print("✅ پشتیبانی از تمام سایت‌ها")
     print("✅ حجم مجاز: ۵۰۰ مگابایت")
-    print("✅ عضویت اجباری در کانال")
-    print("✅ پنل مدیریت پیشرفته")
     print("="*70)
     print("🎯 **۱۰۰٪ تضمینی**")
     print("="*70)
     
-    # پاکسازی فایل‌های قدیمی (بیش از 1 ساعت)
-    current_time = time.time()
-    for f in os.listdir(DOWNLOAD_PATH):
-        file_path = os.path.join(DOWNLOAD_PATH, f)
-        if os.path.isfile(file_path):
-            file_age = current_time - os.path.getctime(file_path)
-            if file_age > 3600:  # 1 ساعت
-                try:
-                    os.remove(file_path)
-                except:
-                    pass
-    
-    # تنظیم وبهوک
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
