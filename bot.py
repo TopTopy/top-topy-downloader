@@ -53,14 +53,11 @@ YT_DLP_OK = check_yt_dlp()
 # ================= ابزار قوی برای استخراج لینک =================
 def extract_urls(text):
     """استخراج همه لینک‌ها از متن با پشتیبانی از لینک‌های کوتاه"""
-    # پترن قوی برای تشخیص لینک
     url_pattern = r'https?://[^\s<>"\'(){}|\\^`\[\]]+'
     urls = re.findall(url_pattern, text)
     
-    # پاکسازی لینک‌ها از کاراکترهای اضافی
     cleaned_urls = []
     for url in urls:
-        # حذف کاراکترهای اضافی از انتهای لینک
         url = re.sub(r'[.,;:!?()\[\]]+$', '', url)
         cleaned_urls.append(url)
     
@@ -74,7 +71,6 @@ def is_youtube_url(url):
 
 def clean_url(url):
     """پاکسازی و نرمال‌سازی لینک"""
-    # حذف پارامترهای اضافی
     url = re.sub(r'&si=[^&]+', '', url)
     url = re.sub(r'\?si=[^&]+', '', url)
     return url
@@ -85,38 +81,43 @@ class YouTubeDownloader:
         pass
     
     def get_video_info(self, url):
-        """گرفتن اطلاعات ویدیو"""
-        try:
-            cmd = [
+        """گرفتن اطلاعات ویدیو با ۳ روش مختلف (نسخه بهینه‌شده)"""
+        
+        # روش‌های مختلف برای دریافت اطلاعات
+        methods = [
+            # روش 1: معمولی با User-Agent قوی
+            [
                 'yt-dlp',
                 '--dump-json',
                 '--no-playlist',
                 '--quiet',
-                '--user-agent', USER_AGENTS[0],
+                '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                url
+            ],
+            # روش 2: با کلاینت اندروید (مخصوص Shorts)
+            [
+                'yt-dlp',
+                '--extractor-args', 'youtube:player_client=android_embedded',
+                '--dump-json',
+                '--no-playlist',
+                '--quiet',
+                '--user-agent', 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36',
+                url
+            ],
+            # روش 3: با عبور از محدودیت جغرافیایی
+            [
+                'yt-dlp',
+                '--geo-bypass',
+                '--geo-bypass-country', 'US',
+                '--dump-json',
+                '--no-playlist',
+                '--quiet',
                 url
             ]
-            
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            
-            if result.returncode == 0:
-                info = json.loads(result.stdout)
-                return {
-                    'title': info.get('title', 'بدون عنوان'),
-                    'duration': info.get('duration', 0),
-                    'uploader': info.get('uploader', 'ناشناس'),
-                    'views': info.get('view_count', 0),
-                }
-            else:
-                # تلاش با روش دوم
-                cmd = [
-                    'yt-dlp',
-                    '--extractor-args', 'youtube:player_client=android_embedded',
-                    '--dump-json',
-                    '--no-playlist',
-                    '--quiet',
-                    '--user-agent', USER_AGENTS[2],
-                    url
-                ]
+        ]
+        
+        for i, cmd in enumerate(methods):
+            try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
                 if result.returncode == 0:
                     info = json.loads(result.stdout)
@@ -125,9 +126,10 @@ class YouTubeDownloader:
                         'duration': info.get('duration', 0),
                         'uploader': info.get('uploader', 'ناشناس'),
                         'views': info.get('view_count', 0),
+                        'success_method': i+1
                     }
-        except:
-            pass
+            except:
+                continue
         
         return None
     
@@ -161,7 +163,7 @@ class YouTubeDownloader:
         if quality == 'audio':
             base_cmd.extend(['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0'])
         
-        # ۵ روش مختلف
+        # ۵ روش مختلف برای دانلود
         methods = [
             {'name': 'معمولی', 'cmd': base_cmd + ['--user-agent', USER_AGENTS[0], url]},
             {'name': 'موبایل', 'cmd': base_cmd + ['--user-agent', USER_AGENTS[2], '--extractor-args', 'youtube:player_client=android_embedded', url]},
@@ -505,7 +507,9 @@ def handle_message(message):
         )
     else:
         bot.edit_message_text(
-            "❌ **خطا در دریافت اطلاعات ویدیو!**",
+            "❌ **خطا در دریافت اطلاعات ویدیو!**\n"
+            "ممکنه ویدیو حذف شده باشه یا یوتیوب درخواست رو بلاک کرده.\n"
+            "لطفاً چند دقیقه بعد دوباره تلاش کنید.",
             info_msg.chat.id,
             info_msg.message_id,
             parse_mode="Markdown"
@@ -550,8 +554,17 @@ if __name__ == "__main__":
     print("="*60)
     print(f"✅ yt-dlp: {'نصب است' if YT_DLP_OK else 'نصب نیست'}")
     print("✅ ۵ روش دانلود")
+    print("✅ دریافت اطلاعات با ۳ روش")
     print("="*60)
     
+    # پاکسازی فایل‌های قدیمی
+    for f in os.listdir(DOWNLOAD_PATH):
+        try:
+            os.remove(os.path.join(DOWNLOAD_PATH, f))
+        except:
+            pass
+    
+    # تنظیم وب‌هوک
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
