@@ -26,15 +26,6 @@ REQUIRED_CHANNELS = [
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs("database", exist_ok=True)
 
-# ================= User-Agent های مختلف برای دور زدن 403 =================
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (Linux; Android 13; SM-S908B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-]
-
 # ================= بررسی نصب yt-dlp =================
 def check_yt_dlp():
     try:
@@ -57,10 +48,10 @@ def extract_urls(text):
 
 def is_youtube_url(url):
     url = url.lower()
-    youtube_domains = ['youtube.com', 'youtu.be']
+    youtube_domains = ['youtube.com', 'youtu.be', 'm.youtube.com']
     return any(domain in url for domain in youtube_domains)
 
-# ================= دانلودر قدرتمند با قابلیت عبور از محدودیت‌ها =================
+# ================= دانلودر ساده =================
 class YouTubeDownloader:
     def __init__(self):
         pass
@@ -68,175 +59,106 @@ class YouTubeDownloader:
     def get_video_info(self, url):
         """گرفتن اطلاعات ویدیو با روش‌های مختلف"""
         
-        # روش 1: با User-Agent عادی
+        # روش 1: ساده
         try:
             cmd = [
                 'yt-dlp',
                 '--dump-json',
                 '--no-playlist',
                 '--quiet',
-                '--user-agent', USER_AGENTS[0],
+                '--no-warnings',
                 url
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout:
                 info = json.loads(result.stdout)
                 return {
                     'title': info.get('title', 'بدون عنوان'),
                     'duration': info.get('duration', 0),
                     'uploader': info.get('uploader', 'ناشناس'),
                     'views': info.get('view_count', 0),
-                    'age_limit': info.get('age_limit', 0),
-                    'availability': 'available'
+                    'success': True
                 }
         except:
             pass
         
-        # روش 2: با کوکی (برای ویدیوهای سنی)
-        cookies_file = "cookies.txt"
-        if os.path.exists(cookies_file):
-            try:
-                cmd = [
-                    'yt-dlp',
-                    '--cookies', cookies_file,
-                    '--dump-json',
-                    '--no-playlist',
-                    '--quiet',
-                    '--user-agent', USER_AGENTS[1],
-                    url
-                ]
-                result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                
-                if result.returncode == 0:
-                    info = json.loads(result.stdout)
-                    return {
-                        'title': info.get('title', 'بدون عنوان'),
-                        'duration': info.get('duration', 0),
-                        'uploader': info.get('uploader', 'ناشناس'),
-                        'views': info.get('view_count', 0),
-                        'age_limit': info.get('age_limit', 0),
-                        'availability': 'available_with_cookie'
-                    }
-            except:
-                pass
-        
-        # روش 3: با مرورگر (برای ویدیوهای خیلی محدود)
+        # روش 2: با کلاینت موبایل
         try:
             cmd = [
                 'yt-dlp',
-                '--extractor-args', 'youtube:player_client=android_embedded',
                 '--dump-json',
                 '--no-playlist',
                 '--quiet',
+                '--no-warnings',
+                '--extractor-args', 'youtube:player_client=android_embedded',
                 url
             ]
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             
-            if result.returncode == 0:
+            if result.returncode == 0 and result.stdout:
                 info = json.loads(result.stdout)
                 return {
                     'title': info.get('title', 'بدون عنوان'),
                     'duration': info.get('duration', 0),
                     'uploader': info.get('uploader', 'ناشناس'),
                     'views': info.get('view_count', 0),
-                    'age_limit': info.get('age_limit', 0),
-                    'availability': 'available_with_mobile'
+                    'success': True
                 }
         except:
             pass
         
         return None
     
-    def download_with_bypass(self, url, quality, chat_id, msg_id):
-        """دانلود با قابلیت عبور از تمام محدودیت‌ها"""
-        
-        # تنظیمات پایه
-        base_cmd = [
-            'yt-dlp',
-            '--no-playlist',
-            '--no-warnings',
-            '--progress',
-            '--newline',
-        ]
-        
-        # اضافه کردن گزینه‌های مختلف برای عبور از محدودیت‌ها
-        bypass_options = [
-            [],  # روش عادی
-            ['--user-agent', USER_AGENTS[2]],  # با User-Agent موبایل
-            ['--extractor-args', 'youtube:player_client=android_embedded'],  # کلاینت اندروید
-            ['--extractor-args', 'youtube:player_client=ios'],  # کلاینت iOS
-            ['--extractor-args', 'youtube:skip=webpage'],  # رد کردن صفحه وب
-            ['--geo-bypass'],  # عبور از محدودیت جغرافیایی
-            ['--geo-bypass-country', 'US'],  # عبور با آی‌پی آمریکا
-        ]
-        
-        # اگه فایل کوکی وجود داره، اضافه کن
-        cookies_file = "cookies.txt"
-        if os.path.exists(cookies_file):
-            bypass_options.append(['--cookies', cookies_file])
-        
-        # تنظیم فرمت بر اساس کیفیت
-        if quality == 'best':
-            format_option = '-f', 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-        elif quality == '720p':
-            format_option = '-f', 'best[height<=720][ext=mp4]/best[ext=mp4]/best'
-        elif quality == '360p':
-            format_option = '-f', 'best[height<=360][ext=mp4]/worst[ext=mp4]/worst'
-        elif quality == 'audio':
-            format_option = '-f', 'bestaudio'
-        else:
-            format_option = '-f', 'best[ext=mp4]/best'
-        
-        output_template = f'{DOWNLOAD_PATH}/%(title)s_%(id)s.%(ext)s'
-        
-        # امتحان همه روش‌ها
-        for i, bypass in enumerate(bypass_options):
-            try:
-                if msg_id:
-                    bot.edit_message_text(
-                        f"🔄 **روش {i+1}/{len(bypass_options)} برای عبور از محدودیت...**",
-                        chat_id,
-                        msg_id,
-                        parse_mode="Markdown"
-                    )
-                
-                # ساخت دستور کامل
-                cmd = base_cmd.copy()
-                cmd.extend(bypass)
-                cmd.extend([format_option[0], format_option[1]])
-                cmd.extend(['-o', output_template])
-                cmd.append(url)
-                
-                # اگه صوتی هست، گزینه‌های اضافه کن
-                if quality == 'audio':
-                    cmd.extend(['--extract-audio', '--audio-format', 'mp3', '--audio-quality', '0'])
-                
-                # اجرای دانلود
-                process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, 
-                                         text=True, bufsize=1)
-                
-                for line in process.stdout:
-                    if '%' in line:
-                        try:
-                            percent = re.search(r'(\d+\.\d+)%', line)
-                            if percent:
-                                prog = float(percent.group(1))
-                                if msg_id and i == len(bypass_options)-1:  # فقط برای آخرین روش نشون بده
-                                    bot.edit_message_text(
-                                        f"📥 **در حال دانلود...**\n⏳ {prog:.1f}%",
-                                        chat_id,
-                                        msg_id,
-                                        parse_mode="Markdown"
-                                    )
-                        except:
-                            pass
-                
-                process.wait()
-                
-                if process.returncode == 0:
-                    time.sleep(2)
-                    files = os.listdir(DOWNLOAD_PATH)
+    def download_video(self, url, quality, chat_id, msg_id):
+        """دانلود ویدیو"""
+        try:
+            # تنظیم فرمت
+            if quality == 'best':
+                format_option = 'best[ext=mp4]/best'
+            elif quality == '720p':
+                format_option = 'best[height<=720][ext=mp4]/best[ext=mp4]'
+            elif quality == '480p':
+                format_option = 'best[height<=480][ext=mp4]/best[ext=mp4]'
+            elif quality == '360p':
+                format_option = 'best[height<=360][ext=mp4]/best[ext=mp4]'
+            elif quality == 'audio':
+                format_option = 'bestaudio'
+            else:
+                format_option = 'best[ext=mp4]/best'
+            
+            output_template = f'{DOWNLOAD_PATH}/%(title)s.%(ext)s'
+            
+            # ساخت دستور
+            cmd = [
+                'yt-dlp',
+                '-f', format_option,
+                '-o', output_template,
+                '--no-playlist',
+                '--no-warnings',
+                '--quiet',
+                url
+            ]
+            
+            # اگه صوتی هست
+            if quality == 'audio':
+                cmd.extend(['--extract-audio', '--audio-format', 'mp3'])
+            
+            # اجرای دانلود
+            if msg_id:
+                bot.edit_message_text(
+                    "🔄 **در حال دانلود...**",
+                    chat_id,
+                    msg_id,
+                    parse_mode="Markdown"
+                )
+            
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            
+            if result.returncode == 0:
+                time.sleep(2)
+                files = os.listdir(DOWNLOAD_PATH)
+                if files:
                     latest_file = max(
                         [os.path.join(DOWNLOAD_PATH, f) for f in files],
                         key=os.path.getctime
@@ -244,15 +166,22 @@ class YouTubeDownloader:
                     return {
                         'filename': latest_file,
                         'size': os.path.getsize(latest_file),
-                        'quality': quality,
-                        'method': i+1
+                        'quality': quality
                     }
-                    
-            except Exception as e:
-                print(f"خطا در روش {i+1}: {e}")
-                continue
-        
-        return None
+            return None
+            
+        except subprocess.TimeoutExpired:
+            if msg_id:
+                bot.edit_message_text(
+                    "⏱ **زمان دانلود بیش از حد طول کشید**\nلطفاً دوباره تلاش کنید.",
+                    chat_id,
+                    msg_id,
+                    parse_mode="Markdown"
+                )
+            return None
+        except Exception as e:
+            print(f"خطا در دانلود: {e}")
+            return None
 
 # ================= ایجاد نمونه =================
 downloader = YouTubeDownloader()
@@ -329,25 +258,13 @@ def format_duration(seconds):
     else:
         return f"{minutes}:{seconds%60:02d}"
 
-def get_error_message(error_text):
-    """تشخیص نوع خطا و برگردوندن پیام مناسب"""
-    if '403' in error_text or 'Forbidden' in error_text:
-        return "🚫 **خطای 403 - دسترسی ممنوع**\nیوتیوب درخواست رو بلاک کرده. در حال تلاش با روش جایگزین..."
-    elif 'Video unavailable' in error_text:
-        return "❌ **ویدیو در دسترس نیست**\nاین ویدیو ممکنه حذف یا خصوصی شده باشه."
-    elif 'Sign in' in error_text or 'age' in error_text.lower():
-        return "🔞 **ویدیو محدودیت سنی دارد**\nبرای دانلود نیاز به حساب یوتیوب دارید."
-    elif 'DRM' in error_text:
-        return "🔒 **ویدیو دارای محافظت DRM است**\nاین ویدیو قابل دانلود نیست."
-    else:
-        return None
-
 # ================= کیبورد انتخاب کیفیت =================
 def quality_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("🎥 بهترین کیفیت", callback_data="quality_best"),
         InlineKeyboardButton("🎥 720p", callback_data="quality_720p"),
+        InlineKeyboardButton("🎥 480p", callback_data="quality_480p"),
         InlineKeyboardButton("🎥 360p", callback_data="quality_360p"),
         InlineKeyboardButton("🎵 فقط صدا", callback_data="quality_audio"),
         InlineKeyboardButton("❌ لغو", callback_data="quality_cancel")
@@ -371,12 +288,11 @@ def start(message):
     welcome_text = (
         f"🎬 **سلام {message.from_user.first_name or message.from_user.username}!**\n\n"
         "به **ربات دانلود یوتیوب** خوش اومدی 🤖\n\n"
-        "✅ **قابلیت‌های ویژه:**\n"
-        "• عبور از خطای 403 Forbidden\n"
-        "• دانلود ویدیوهای محدودیت سنی\n"
-        "• دور زدن محدودیت جغرافیایی\n"
-        "• دانلود با ۶ روش مختلف\n"
-        "• نمایش پیشرفت دانلود\n\n"
+        "✅ **قابلیت‌ها:**\n"
+        "• دانلود با کیفیت‌های مختلف\n"
+        "• دانلود صوتی MP3\n"
+        "• پشتیبانی از لینک‌های کوتاه\n"
+        "• حجم تا ۳۰۰ مگابایت\n\n"
         "📌 **فقط کافیه لینک یوتیوب رو بفرستی!**"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
@@ -400,7 +316,7 @@ def quality_callback(call):
     url = call.message.text.split('\n')[-1]
     
     bot.edit_message_text(
-        f"🔄 **در حال آماده‌سازی روش‌های عبور از محدودیت...**",
+        f"🔄 **در حال دانلود...**\n⏳ لطفاً صبر کنید",
         call.message.chat.id,
         call.message.message_id,
         parse_mode="Markdown"
@@ -414,7 +330,7 @@ def quality_callback(call):
 
 def process_download(url, quality, chat_id, user_id, msg_id):
     try:
-        result = downloader.download_with_bypass(url, quality, chat_id, msg_id)
+        result = downloader.download_video(url, quality, chat_id, msg_id)
         
         if result:
             # بررسی حجم فایل
@@ -434,14 +350,14 @@ def process_download(url, quality, chat_id, user_id, msg_id):
                     bot.send_audio(
                         chat_id, 
                         f,
-                        caption=f"✅ **دانلود کامل شد**\n📊 حجم: {result['size']/1024/1024:.1f}MB\n🔄 روش: {result['method']}",
+                        caption=f"✅ **دانلود کامل شد**\n📊 حجم: {result['size']/1024/1024:.1f}MB",
                         timeout=120
                     )
                 else:
                     bot.send_video(
                         chat_id, 
                         f,
-                        caption=f"✅ **دانلود کامل شد**\n📊 حجم: {result['size']/1024/1024:.1f}MB\n🔄 روش: {result['method']}",
+                        caption=f"✅ **دانلود کامل شد**\n📊 حجم: {result['size']/1024/1024:.1f}MB",
                         timeout=120
                     )
             
@@ -460,27 +376,18 @@ def process_download(url, quality, chat_id, user_id, msg_id):
             )
         else:
             bot.edit_message_text(
-                "❌ **خطا در دانلود!**\nهمه روش‌ها امتحان شدند اما موفق نبود.",
+                "❌ **خطا در دانلود!**\nلطفاً دوباره تلاش کنید.",
                 chat_id,
                 msg_id,
                 parse_mode="Markdown"
             )
     except Exception as e:
-        error_msg = get_error_message(str(e))
-        if error_msg:
-            bot.edit_message_text(
-                error_msg,
-                chat_id,
-                msg_id,
-                parse_mode="Markdown"
-            )
-        else:
-            bot.edit_message_text(
-                f"❌ **خطا:**\n`{str(e)[:200]}`",
-                chat_id,
-                msg_id,
-                parse_mode="Markdown"
-            )
+        bot.edit_message_text(
+            f"❌ **خطا:**\n`{str(e)[:200]}`",
+            chat_id,
+            msg_id,
+            parse_mode="Markdown"
+        )
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_message(message):
@@ -530,12 +437,8 @@ def handle_message(message):
     info = downloader.get_video_info(url)
     
     if info:
-        age_warning = ""
-        if info.get('age_limit', 0) > 0:
-            age_warning = "\n⚠️ **این ویدیو محدودیت سنی دارد**"
-        
         info_text = (
-            f"📹 **اطلاعات ویدیو**{age_warning}\n\n"
+            f"📹 **اطلاعات ویدیو**\n\n"
             f"📌 عنوان: `{info['title'][:50]}...`\n"
             f"⏱ مدت: {format_duration(info['duration'])}\n"
             f"👤 کانال: {info['uploader']}\n"
@@ -553,7 +456,8 @@ def handle_message(message):
     else:
         bot.edit_message_text(
             "❌ **خطا در دریافت اطلاعات ویدیو!**\n"
-            "ممکنه ویدیو حذف شده یا خصوصی باشه.",
+            "ممکنه لینک اشتباه باشه یا ویدیو حذف شده باشه.\n"
+            "لطفاً لینک رو دوباره بررسی کنید.",
             info_msg.chat.id,
             info_msg.message_id,
             parse_mode="Markdown"
@@ -589,20 +493,17 @@ def webhook():
 
 @app.route('/')
 def home():
-    return "ربات دانلود یوتیوب - عبور از تمام محدودیت‌ها"
+    return "ربات دانلود یوتیوب"
 
 # ================= اجرا =================
 if __name__ == "__main__":
-    print("="*70)
-    print("🎬 ربات دانلود یوتیوب - عبور از تمام محدودیت‌ها")
-    print("="*70)
+    print("="*60)
+    print("🎬 ربات دانلود یوتیوب")
+    print("="*60)
     print(f"✅ yt-dlp: {'نصب است' if YT_DLP_OK else 'نصب نیست'}")
-    print("✅ قابلیت‌های ویژه:")
-    print("   • عبور از 403 Forbidden")
-    print("   • دانلود ویدیوهای محدودیت سنی")
-    print("   • دور زدن محدودیت جغرافیایی")
-    print("   • ۶ روش مختلف دانلود")
-    print("="*70)
+    print("✅ کیفیت‌ها: Best, 720p, 480p, 360p, MP3")
+    print("✅ حجم مجاز: 300MB")
+    print("="*60)
     
     # پاکسازی فایل‌های قدیمی
     for f in os.listdir(DOWNLOAD_PATH):
@@ -618,6 +519,6 @@ if __name__ == "__main__":
     
     print(f"✅ Webhook: {WEBHOOK_URL}")
     print("✅ ربات فعال شد!")
-    print("="*70)
+    print("="*60)
     
     app.run(host="0.0.0.0", port=PORT)
