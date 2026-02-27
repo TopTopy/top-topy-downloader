@@ -82,14 +82,57 @@ def clean_url(url):
 
 def resolve_short_url(url):
     try:
-        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly']
+        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly', 'pin.it']
         parsed = urlparse(url)
         if any(domain in parsed.netloc for domain in short_domains):
-            response = requests.head(url, allow_redirects=True, timeout=10)
+            response = requests.head(url, allow_redirects=True, timeout=10, headers={'User-Agent': random.choice(USER_AGENTS)})
             return response.url
         return url
     except:
         return url
+
+# ================= تشخیص تصویر یا ویدیو =================
+def is_image_url(url):
+    """تشخیص لینک تصویر از روی پسوند"""
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
+    url_lower = url.lower()
+    for ext in image_extensions:
+        if ext in url_lower:
+            return True
+    return False
+
+def download_image_direct(url):
+    """دانلود مستقیم تصویر از لینک"""
+    try:
+        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
+        
+        # تشخیص پسوند از لینک
+        ext = '.jpg'
+        for known_ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
+            if known_ext in url.lower():
+                ext = known_ext
+                break
+        
+        filename = os.path.join(DOWNLOAD_PATH, f"image_{unique}{ext}")
+        
+        headers = {'User-Agent': random.choice(USER_AGENTS)}
+        response = requests.get(url, headers=headers, timeout=30, stream=True)
+        
+        if response.status_code == 200:
+            content_type = response.headers.get('content-type', '')
+            if 'image' in content_type:
+                with open(filename, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                
+                if os.path.exists(filename) and os.path.getsize(filename) > 1024:
+                    return {'file': filename, 'method': 'دانلود مستقیم تصویر', 'type': 'image'}
+        
+        return None
+    except Exception as e:
+        print(f"خطا در دانلود تصویر: {e}")
+        return None
 
 # ================= موتور دانلود جهانی با ۱۵ روش =================
 class UniversalDownloader:
@@ -129,8 +172,81 @@ class UniversalDownloader:
             "التمیت روش نهایی",
         ]
     
+    def _detect_media_type(self, url):
+        """تشخیص نوع رسانه (تصویر یا ویدیو)"""
+        # اول چک کن پسوند تصویر داره
+        if is_image_url(url):
+            return 'image'
+        
+        # برای پینترست و اینستاگرام، با yt-dlp چک کن
+        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
+            try:
+                ydl_opts = {
+                    'quiet': True,
+                    'no_warnings': True,
+                    'simulate': True,
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    
+                    # اگه فرمت ویدیو نداره و url مستقیم داره، احتمالاً تصویر
+                    if not info.get('formats') and info.get('url'):
+                        return 'image'
+                    
+                    # اگه thumbnails داره و فرمت نداره
+                    if info.get('thumbnails') and not info.get('formats'):
+                        return 'image'
+            except:
+                pass
+        
+        return 'video'
+    
+    def _download_image_with_ytdlp(self, url):
+        """دانلود تصویر با yt-dlp (برای پینترست و اینستاگرام)"""
+        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
+        output = os.path.join(DOWNLOAD_PATH, f"image_ytdlp_{unique}.%(ext)s")
+        
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': output,
+            'quiet': True,
+            'no_warnings': True,
+            'retries': 5,
+        }
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                
+                if 'requested_downloads' in info and info['requested_downloads']:
+                    filepath = info['requested_downloads'][0]['filepath']
+                else:
+                    filepath = ydl.prepare_filename(info)
+                
+                if os.path.exists(filepath):
+                    # بررسی اینکه فایل واقعاً تصویر است
+                    if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                        return {'file': filepath, 'method': 'yt-dlp تصویر', 'type': 'image'}
+                    # اگه ویدیو بود، ignore کن
+                    elif filepath.lower().endswith(('.mp4', '.mkv')):
+                        os.remove(filepath)
+                        return None
+        except Exception as e:
+            print(f"خطا در دانلود تصویر با yt-dlp: {e}")
+        
+        return None
+    
     def _download_with_ydl(self, url, format_spec, method_name, is_audio=False):
         """تابع پایه برای دانلود با yt-dlp"""
+        # اول بررسی کن شاید تصویر باشه
+        if not is_audio:
+            media_type = self._detect_media_type(url)
+            if media_type == 'image':
+                # تلاش برای دانلود تصویر
+                img_result = self._download_image_with_ytdlp(url)
+                if img_result:
+                    return img_result
+        
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"%(title)s_{unique}.%(ext)s")
         
@@ -169,7 +285,9 @@ class UniversalDownloader:
                     filepath = os.path.splitext(filepath)[0] + '.mp3'
                 
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath)}
+                    # تشخیص نوع فایل
+                    file_type = 'audio' if is_audio else ('image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video')
+                    return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath), 'type': file_type}
         except Exception as e:
             print(f"خطا در {method_name}: {e}")
         return None
@@ -206,7 +324,8 @@ class UniversalDownloader:
         try:
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and os.path.exists(output):
-                return {'file': output, 'method': method_name, 'size': os.path.getsize(output)}
+                file_type = 'audio' if is_audio else 'video'
+                return {'file': output, 'method': method_name, 'size': os.path.getsize(output), 'type': file_type}
         except:
             pass
         return None
@@ -245,7 +364,8 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': 'روش 6', 'size': os.path.getsize(filepath)}
+                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
+                    return {'file': filepath, 'method': 'روش 6', 'size': os.path.getsize(filepath), 'type': file_type}
         except:
             pass
         return None
@@ -269,7 +389,8 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': 'روش 7', 'size': os.path.getsize(filepath)}
+                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
+                    return {'file': filepath, 'method': 'روش 7', 'size': os.path.getsize(filepath), 'type': file_type}
         except:
             pass
         return None
@@ -298,7 +419,8 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': 'روش 9', 'size': os.path.getsize(filepath)}
+                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
+                    return {'file': filepath, 'method': 'روش 9', 'size': os.path.getsize(filepath), 'type': file_type}
         except:
             pass
         return None
@@ -322,7 +444,8 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    return {'file': filepath, 'method': 'روش 10', 'size': os.path.getsize(filepath)}
+                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
+                    return {'file': filepath, 'method': 'روش 10', 'size': os.path.getsize(filepath), 'type': file_type}
         except:
             pass
         return None
@@ -348,6 +471,12 @@ class UniversalDownloader:
         return None
     
     def method_15_ytdlp_ultimate(self, url):
+        # اول بررسی کن تصویر باشه
+        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
+            img_result = self._download_image_with_ytdlp(url)
+            if img_result:
+                return img_result
+        
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"ultimate_{unique}.mp4")
         
@@ -369,18 +498,27 @@ class UniversalDownloader:
             
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and os.path.exists(output):
-                return {'file': output, 'method': 'روش 15', 'size': os.path.getsize(output)}
+                return {'file': output, 'method': 'روش 15', 'size': os.path.getsize(output), 'type': 'video'}
         except:
             pass
         return None
     
     def download(self, url, progress_callback=None):
-        """تلاش با همه ۱۵ روش"""
+        """تلاش با همه ۱۵ روش + تشخیص تصویر"""
+        
+        # اول بررسی کن شاید لینک مستقیم تصویر باشه
+        if is_image_url(url):
+            if progress_callback:
+                progress_callback("🖼️ **تشخیص لینک مستقیم تصویر...**")
+            img_result = download_image_direct(url)
+            if img_result:
+                return img_result
+        
         for i, method in enumerate(self.methods):
             method_name = self.method_names[i]
             
             if progress_callback:
-                progress_callback(f"🔄 تلاش با روش {i+1}: {method_name}...")
+                progress_callback(f"🔄 **تلاش با روش {i+1}: {method_name}...**")
             
             try:
                 result = method(url)
@@ -402,6 +540,7 @@ def platform_keyboard():
     markup.add(
         InlineKeyboardButton("🎥 ویدیو", callback_data="video"),
         InlineKeyboardButton("🎵 فقط صدا", callback_data="audio"),
+        InlineKeyboardButton("🖼️ تصویر", callback_data="image"),
         InlineKeyboardButton("❌ لغو", callback_data="cancel")
     )
     return markup
@@ -412,6 +551,8 @@ def start(message):
     welcome_text = (
         "🎬 **ربات دانلود جهانی - نسخه التیمیت**\n\n"
         "✅ **۱۵ روش مختلف دانلود**\n"
+        "✅ **پشتیبانی از تصاویر و ویدیوها**\n"
+        "✅ تشخیص خودکار تصاویر پینترست و اینستاگرام\n"
         "✅ پشتیبانی از تمام سایت‌ها\n"
         "✅ یوتیوب | اینستاگرام | تیک‌تاک | توییتر | فیسبوک\n"
         "✅ آپارات | تلوبیون | فیلیمو | و هزاران سایت دیگر\n"
@@ -443,9 +584,14 @@ def handle(message):
     platform = detect_platform(url)
     user_links[user_id] = url
     
+    # تشخیص خودکار نوع محتوا
+    media_type_hint = ""
+    if 'pinterest' in url or 'pin.it' in url:
+        media_type_hint = "\n🖼️ **این لینک ممکنه تصویر باشه**"
+    
     bot.reply_to(
         message, 
-        f"📥 **پلتفرم: {platform}**\n\n"
+        f"📥 **پلتفرم: {platform}**{media_type_hint}\n\n"
         f"🎯 ۱۵ روش مختلف برای دانلود آماده است!\n"
         f"لطفاً نوع دانلود رو انتخاب کن:", 
         reply_markup=platform_keyboard(), 
@@ -508,11 +654,23 @@ def handle_callback(call):
                 progress_callback(f"📤 **در حال آپلود...**\n📊 حجم: {file_size/1024/1024:.1f}MB")
 
                 with open(result['file'], 'rb') as f:
-                    if result['file'].endswith('.mp3'):
+                    file_type = result.get('type', 'video')
+                    
+                    if file_type == 'image' or result['file'].lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
+                        bot.send_photo(
+                            chat_id, 
+                            f,
+                            caption=f"✅ **تصویر با موفقیت دانلود شد!**\n"
+                                   f"📥 روش: {result['method']}\n"
+                                   f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
+                                   f"🎯 ۱۵ روش مختلف امتحان شد",
+                            timeout=300
+                        )
+                    elif file_type == 'audio' or result['file'].endswith('.mp3'):
                         bot.send_audio(
                             chat_id, 
                             f,
-                            caption=f"✅ **دانلود با موفقیت انجام شد!**\n"
+                            caption=f"✅ **صدا با موفقیت دانلود شد!**\n"
                                    f"📥 روش: {result['method']}\n"
                                    f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
                                    f"🎯 ۱۵ روش مختلف امتحان شد",
@@ -522,7 +680,7 @@ def handle_callback(call):
                         bot.send_video(
                             chat_id, 
                             f,
-                            caption=f"✅ **دانلود با موفقیت انجام شد!**\n"
+                            caption=f"✅ **ویدیو با موفقیت دانلود شد!**\n"
                                    f"📥 روش: {result['method']}\n"
                                    f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
                                    f"🎯 ۱۵ روش مختلف امتحان شد",
@@ -547,7 +705,7 @@ def handle_callback(call):
                     "❌ **خطا در دانلود!**\n"
                     "همه ۱۵ روش امتحان شدند اما موفق نبود.\n"
                     "مشکل ممکنه از این موارد باشه:\n"
-                    "• ویدیو خصوصی یا حذف شده\n"
+                    "• فایل خصوصی یا حذف شده\n"
                     "• محدودیت شدید کپی‌رایت\n"
                     "• مشکل در سرور\n\n"
                     "لطفاً چند دقیقه بعد دوباره تلاش کنید."
@@ -580,6 +738,7 @@ def admin_panel(message):
     
     text = f"👑 **پنل مدیریت**\n\n"
     text += f"✅ **۱۵ روش دانلود فعال**\n"
+    text += f"✅ **پشتیبانی از تصاویر**\n"
     text += f"📊 دانلودهای هم‌زمان: {len(active_downloads)}\n"
     text += f"📦 yt-dlp نسخه: {version}\n"
     text += f"💾 حجم مجاز: ۵۰۰ مگابایت\n"
@@ -596,13 +755,15 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "ربات دانلود جهانی با ۱۵ روش - ۱۰۰٪ تضمینی"
+    return "ربات دانلود جهانی با ۱۵ روش - پشتیبانی از تصاویر"
 
 if __name__ == "__main__":
     print("="*70)
-    print("🎬 ربات دانلود جهانی - نسخه التیمیت با ۱۵ روش")
+    print("🎬 ربات دانلود جهانی - نسخه التیمیت با پشتیبانی از تصاویر")
     print("="*70)
     print("✅ ۱۵ روش مختلف دانلود")
+    print("✅ پشتیبانی از تصاویر (پینترست، اینستاگرام و...)")
+    print("✅ تشخیص خودکار نوع فایل")
     print("✅ پشتیبانی از تمام سایت‌ها")
     print("✅ حجم مجاز: ۵۰۰ مگابایت")
     print("="*70)
@@ -614,7 +775,7 @@ if __name__ == "__main__":
     bot.set_webhook(url=WEBHOOK_URL)
     
     print(f"✅ Webhook: {WEBHOOK_URL}")
-    print("✅ ربات با ۱۵ روش فعال شد!")
+    print("✅ ربات با ۱۵ روش و پشتیبانی از تصاویر فعال شد!")
     print("="*70)
     
     app.run(host="0.0.0.0", port=PORT)
