@@ -11,7 +11,7 @@ import yt_dlp
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
-MAX_FILE_SIZE = 300 * 1024 * 1024  # افزایش به 300 مگابایت
+MAX_FILE_SIZE = 300 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
@@ -56,59 +56,86 @@ def force_join_markup():
     markup.add(InlineKeyboardButton("✅ بررسی عضویت", callback_data="check_join"))
     return markup
 
-# ================= دانلود حرفه‌ای =================
+# ================= دانلود حرفه‌ای با Fallback Format =================
 def download_video(url, quality):
 
     unique = str(int(time.time()*1000))
-    output = f"{DOWNLOAD_PATH}/%(title)s_{unique}.%(ext)s"
+    output_template = os.path.join(DOWNLOAD_PATH, f"%(title)s_{unique}.%(ext)s")
 
-    # مهم: fallback format گذاشتیم
-    format_map = {
-        "best": "bestvideo+bestaudio/best",
-        "720": "bestvideo[height<=720]+bestaudio/best[height<=720]",
-        "480": "bestvideo[height<=480]+bestaudio/best[height<=480]",
-        "360": "bestvideo[height<=360]+bestaudio/best[height<=360]",
-        "audio": "bestaudio"
+    # لیست فرمت‌های fallback (خیلی مهم)
+    format_priority = {
+        "best": [
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]",
+            "bestvideo+bestaudio",
+            "best[ext=mp4]",
+            "best"
+        ],
+        "720": [
+            "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]",
+            "best[height<=720][ext=mp4]",
+            "best[height<=720]",
+        ],
+        "480": [
+            "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]",
+            "best[height<=480][ext=mp4]",
+            "best[height<=480]",
+        ],
+        "360": [
+            "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]",
+            "best[height<=360][ext=mp4]",
+            "best[height<=360]",
+        ],
+        "audio": [
+            "bestaudio[ext=m4a]",
+            "bestaudio"
+        ]
     }
 
-    ydl_opts = {
-        "format": format_map.get(quality, "best"),
-        "outtmpl": output,
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "merge_output_format": "mp4",
-        "retries": 5,
-        "fragment_retries": 5,
-    }
+    formats = format_priority.get(quality, format_priority["best"])
 
-    if quality == "audio":
-        ydl_opts.update({
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }]
-        })
+    for fmt in formats:
+        try:
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-
-            # گرفتن اسم فایل نهایی درست
-            if "requested_downloads" in info:
-                filename = info["requested_downloads"][0]["filepath"]
-            else:
-                filename = ydl.prepare_filename(info)
+            ydl_opts = {
+                "format": fmt,
+                "outtmpl": output_template,
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "retries": 10,
+                "fragment_retries": 10,
+                "merge_output_format": "mp4",
+                "socket_timeout": 30,
+                "concurrent_fragment_downloads": 1,  # مهم برای Railway
+                "restrictfilenames": True,
+                "nocheckcertificate": True,
+            }
 
             if quality == "audio":
-                filename = os.path.splitext(filename)[0] + ".mp3"
+                ydl_opts["postprocessors"] = [{
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": "192",
+                }]
 
-            if os.path.exists(filename):
-                return filename
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
 
-    except Exception as e:
-        print("Download Error:", e)
+                # پیدا کردن فایل واقعی خروجی
+                if "requested_downloads" in info and info["requested_downloads"]:
+                    file_path = info["requested_downloads"][0]["filepath"]
+                else:
+                    file_path = ydl.prepare_filename(info)
+
+                if quality == "audio":
+                    file_path = os.path.splitext(file_path)[0] + ".mp3"
+
+                if os.path.exists(file_path):
+                    return file_path
+
+        except Exception as e:
+            print(f"⚠ Format failed: {fmt}")
+            continue  # برو سراغ فرمت بعدی
 
     return None
 
@@ -312,7 +339,7 @@ def home():
 
 if __name__ == "__main__":
     print("="*60)
-    print("🎬 ربات دانلود یوتیوب")
+    print("🎬 ربات دانلود یوتیوب - نسخه نهایی")
     print("="*60)
     print(f"✅ توکن: {TOKEN[:10]}...")
     print(f"✅ ادمین: {ADMIN_ID}")
