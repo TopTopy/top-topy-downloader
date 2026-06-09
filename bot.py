@@ -746,12 +746,23 @@ def admin_panel(message):
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
 # ================= وبهوک =================
-@app.route("/webhook", methods=["POST"])
+@app.route("/webhook", methods=["POST", "GET"])
 def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "OK", 200
+    if request.method == "GET":
+        return "Webhook endpoint is active", 200
+    
+    try:
+        json_str = request.get_data().decode("utf-8")
+        print(f"Webhook received. Data length: {len(json_str)}")
+        
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+        return "OK", 200
+    except Exception as e:
+        print(f"Error in webhook: {e}")
+        import traceback
+        traceback.print_exc()
+        return "OK", 200
 
 @app.route("/")
 def home():
