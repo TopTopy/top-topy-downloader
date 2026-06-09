@@ -1,9 +1,0 @@
-[phases.setup]
-nixPkgs = ["ffmpeg", "python311"]
-
-[phases.install]
-cmds = ["pip install -r requirements.txt"]
-
-# این بخش رو کاملاً حذف کن یا خالی بذار
-# [phases.start]
-# cmds = ["python bot.py"]
