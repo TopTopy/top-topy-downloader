@@ -19,7 +19,7 @@ TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
 ADMIN_ID = 8226091292
 MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
-WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
+WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -30,6 +30,22 @@ app = Flask(__name__)
 user_links = {}
 active_downloads = {}
 lock = threading.Lock()
+
+# ================= تنظیم Webhook در زمان راه‌اندازی =================
+def setup_webhook():
+    try:
+        bot.remove_webhook()
+        time.sleep(1)
+        webhook_url = WEBHOOK_URL
+        bot.set_webhook(url=webhook_url)
+        print(f"✅ Webhook set to: {webhook_url}")
+        return True
+    except Exception as e:
+        print(f"❌ Failed to set webhook: {e}")
+        return False
+
+# اجرای تنظیم webhook وقتی برنامه load میشه
+setup_webhook()
 
 # ================= User-Agent های مختلف =================
 USER_AGENTS = [
@@ -745,7 +761,7 @@ def admin_panel(message):
     
     bot.send_message(message.chat.id, text, parse_mode="Markdown")
 
-# ================= وبهوک =================
+# ================= وب‌هوک =================
 @app.route("/webhook", methods=["POST", "GET"])
 def webhook():
     if request.method == "GET":
@@ -768,6 +784,7 @@ def webhook():
 def home():
     return "ربات دانلود جهانی با ۱۵ روش - پشتیبانی از تصاویر"
 
+# ================= اجرای اصلی =================
 if __name__ == "__main__":
     print("="*70)
     print("🎬 ربات دانلود جهانی - نسخه التیمیت با پشتیبانی از تصاویر")
@@ -780,13 +797,10 @@ if __name__ == "__main__":
     print("="*70)
     print("🎯 **۱۰۰٪ تضمینی**")
     print("="*70)
-    
-    bot.remove_webhook()
-    time.sleep(1)
-    bot.set_webhook(url=WEBHOOK_URL)
-    
-    print(f"✅ Webhook: {WEBHOOK_URL}")
-    print("✅ ربات با ۱۵ روش و پشتیبانی از تصاویر فعال شد!")
+    print("ℹ️ Running with gunicorn - webhook already set")
     print("="*70)
     
-    app.run(host="0.0.0.0", port=PORT)
+    # فقط برای اجرای local development (وقتی مستقیم با python اجرا بشه)
+    # برای production از gunicorn استفاده میشه
+    if os.environ.get('RUNNING_LOCAL'):
+        app.run(host="0.0.0.0", port=PORT)
