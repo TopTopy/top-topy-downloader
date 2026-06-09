@@ -1,9 +1,0 @@
-pyTelegramBotAPI==4.20.0
-yt-dlp>=2024.12.13
-requests==2.31.0
-flask==3.0.3
-gunicorn==21.2.0
-python-dotenv==1.0.1
-urllib3==2.2.1
-certifi==2024.2.2
-idna==3.6
