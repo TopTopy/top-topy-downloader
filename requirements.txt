@@ -3,6 +3,3 @@ yt-dlp>=2025.04.09
 requests==2.31.0
 flask==3.0.3
 gunicorn==21.2.0
-urllib3==2.2.1
-certifi==2024.2.2
-idna==3.6
