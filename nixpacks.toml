@@ -4,7 +4,8 @@ nixPkgs = ["ffmpeg", "yt-dlp", "deno", "nodejs"]
 [phases.install]
 cmds = [
     "pip install -U yt-dlp",
-    "yt-dlp -U || true"
+    "yt-dlp -U || true",
+    "ffmpeg -version"
 ]
 
 [start]
