@@ -62,6 +62,21 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
+# ================= بررسی FFmpeg =================
+def check_ffmpeg():
+    try:
+        result = subprocess.run(['ffmpeg', '-version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            version_line = result.stdout.split('\n')[0]
+            logger.info(f"FFmpeg found: {version_line}")
+            return True
+    except Exception as e:
+        logger.error(f"FFmpeg not found: {e}")
+    return False
+
+HAS_FFMPEG = check_ffmpeg()
+logger.info(f"FFmpeg available: {HAS_FFMPEG}")
+
 # ================= توابع کمکی =================
 def add_admin_log(action, details):
     log_entry = {
@@ -174,7 +189,7 @@ def extract_url(text):
 
 def resolve_short_url(url):
     try:
-        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly', 'pin.it']
+        short_domains = ['bit.ly', 'tinyurl.com', 't.co', 'rb.gy', 'ow.ly', 'is.gd', 'buff.ly', 'pin.it', 'on.soundcloud.com']
         parsed = urlparse(url)
         if any(domain in parsed.netloc for domain in short_domains):
             response = requests.head(url, allow_redirects=True, timeout=10, headers={'User-Agent': random.choice(USER_AGENTS)})
@@ -222,57 +237,27 @@ def download_image_direct(url):
         logger.error(f"خطا در دانلود تصویر: {e}")
         return None
 
-# ================= تشخیص خودکار نوع رسانه (بهبود یافته) =================
+# ================= تشخیص خودکار نوع رسانه =================
 def auto_detect_media_type(url):
     """تشخیص خودکار اینکه لینک برای فیلم است، صدا است یا تصویر"""
     
-    # اول بررسی پسوند تصویر
     if is_image_url(url):
         return 'image'
     
-    # بررسی پسوند صوتی
     audio_extensions = ['.mp3', '.m4a', '.aac', '.flac', '.ogg', '.wav', '.opus']
     url_lower = url.lower()
     for ext in audio_extensions:
         if ext in url_lower:
             return 'audio'
     
-    # بررسی پسوند ویدیویی
     video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv']
     for ext in video_extensions:
         if ext in url_lower:
             return 'video'
     
-    # برای پلتفرم‌های خاص، با yt-dlp چک کن
-    try:
-        ydl_opts = {
-            'quiet': True,
-            'no_warnings': True,
-            'simulate': True,
-            'extract_flat': True,
-            'compat_opts': ['allow-unsafe-ext'],
-        }
-        
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            
-            if info.get('formats'):
-                has_video = any(f.get('vcodec') != 'none' for f in info['formats'])
-                has_audio = any(f.get('acodec') != 'none' for f in info['formats'])
-                
-                if has_audio and not has_video:
-                    return 'audio'
-                elif has_video:
-                    return 'video'
-            
-            if info.get('thumbnails') and not info.get('formats'):
-                return 'image'
-    except:
-        pass
-    
     return 'video'
 
-# ================= موتور دانلود جهانی با ۱۷ روش =================
+# ================= موتور دانلود جهانی با ۲۰ روش =================
 class UniversalDownloader:
     def __init__(self):
         self.methods = [
@@ -292,8 +277,8 @@ class UniversalDownloader:
             self.method_14_ytdlp_fallback,
             self.method_15_ytdlp_ultimate,
             self.method_16_ytdlp_impersonate,
-            self.method_17_youtube_specific,  # روش مخصوص یوتیوب
-            self.method_18_soundcloud_specific,  # روش مخصوص ساوندکلاود
+            self.method_17_youtube_specific,
+            self.method_18_soundcloud_specific,
         ]
         self.method_names = [
             "بهترین کیفیت",
@@ -316,70 +301,7 @@ class UniversalDownloader:
             "ساوندکلاود اختصاصی",
         ]
     
-    def _detect_media_type(self, url):
-        if is_image_url(url):
-            return 'image'
-        
-        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
-            try:
-                ydl_opts = {
-                    'quiet': True,
-                    'no_warnings': True,
-                    'simulate': True,
-                }
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=False)
-                    
-                    if not info.get('formats') and info.get('url'):
-                        return 'image'
-                    
-                    if info.get('thumbnails') and not info.get('formats'):
-                        return 'image'
-            except:
-                pass
-        
-        return 'video'
-    
-    def _download_image_with_ytdlp(self, url):
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"image_ytdlp_{unique}.%(ext)s")
-        
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': output,
-            'quiet': True,
-            'no_warnings': True,
-            'retries': 5,
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                
-                if 'requested_downloads' in info and info['requested_downloads']:
-                    filepath = info['requested_downloads'][0]['filepath']
-                else:
-                    filepath = ydl.prepare_filename(info)
-                
-                if os.path.exists(filepath):
-                    if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
-                        return {'file': filepath, 'method': 'yt-dlp تصویر', 'type': 'image'}
-                    elif filepath.lower().endswith(('.mp4', '.mkv')):
-                        os.remove(filepath)
-                        return None
-        except Exception as e:
-            logger.error(f"خطا در دانلود تصویر با yt-dlp: {e}")
-        
-        return None
-    
     def _download_with_ydl(self, url, format_spec, method_name, is_audio=False):
-        if not is_audio:
-            media_type = self._detect_media_type(url)
-            if media_type == 'image':
-                img_result = self._download_image_with_ytdlp(url)
-                if img_result:
-                    return img_result
-        
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"%(title)s_{unique}.%(ext)s")
         
@@ -389,17 +311,19 @@ class UniversalDownloader:
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
-            'retries': 15,
-            'fragment_retries': 15,
-            'socket_timeout': 30,
+            'retries': 20,
+            'fragment_retries': 20,
+            'socket_timeout': 120,
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            'extractor_retries': 5,
             'concurrent_fragment_downloads': 1,
             'restrictfilenames': True,
-            'nocheckcertificate': True,
             'user_agent': random.choice(USER_AGENTS),
             'compat_opts': ['allow-unsafe-ext'],
         }
         
-        if is_audio:
+        if is_audio and HAS_FFMPEG:
             ydl_opts['postprocessors'] = [{
                 'key': 'FFmpegExtractAudio',
                 'preferredcodec': 'mp3',
@@ -415,11 +339,11 @@ class UniversalDownloader:
                 else:
                     filepath = ydl.prepare_filename(info)
                 
-                if is_audio:
+                if is_audio and HAS_FFMPEG:
                     filepath = os.path.splitext(filepath)[0] + '.mp3'
                 
                 if os.path.exists(filepath):
-                    file_type = 'audio' if is_audio else ('image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video')
+                    file_type = 'audio' if is_audio else 'video'
                     return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath), 'type': file_type}
         except Exception as e:
             logger.error(f"خطا در {method_name}: {e}")
@@ -440,6 +364,9 @@ class UniversalDownloader:
                 '--quiet',
                 '--user-agent', random.choice(USER_AGENTS),
                 '--compat-options', 'allow-unsafe-ext',
+                '--retries', '20',
+                '--fragment-retries', '20',
+                '--socket-timeout', '120',
                 url
             ]
         else:
@@ -452,17 +379,18 @@ class UniversalDownloader:
                 '--quiet',
                 '--user-agent', random.choice(USER_AGENTS),
                 '--compat-options', 'allow-unsafe-ext',
+                '--retries', '20',
+                '--fragment-retries', '20',
+                '--socket-timeout', '120',
+                '--geo-bypass',
                 url
             ]
         
         try:
             result = subprocess.run(cmd, capture_output=True, timeout=300, text=True)
-            logger.debug(f"Subprocess output: {result.stdout}")
             if result.returncode == 0 and os.path.exists(output):
                 file_type = 'audio' if is_audio else 'video'
                 return {'file': output, 'method': method_name, 'size': os.path.getsize(output), 'type': file_type}
-            else:
-                logger.error(f"Subprocess error: {result.stderr}")
         except Exception as e:
             logger.error(f"Subprocess exception: {e}")
         return None
@@ -492,6 +420,7 @@ class UniversalDownloader:
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
+            'retries': 20,
             'extractor_args': {'youtube': {'player_client': ['android_embedded']}},
             'user_agent': USER_AGENTS[3],
             'compat_opts': ['allow-unsafe-ext'],
@@ -502,8 +431,7 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
-                    return {'file': filepath, 'method': 'روش 6', 'size': os.path.getsize(filepath), 'type': file_type}
+                    return {'file': filepath, 'method': 'روش 6', 'size': os.path.getsize(filepath), 'type': 'video'}
         except Exception as e:
             logger.error(f"روش 6 خطا: {e}")
         return None
@@ -518,6 +446,7 @@ class UniversalDownloader:
             'noplaylist': True,
             'quiet': True,
             'no_warnings': True,
+            'retries': 20,
             'extractor_args': {'youtube': {'player_client': ['ios']}},
             'user_agent': USER_AGENTS[2],
             'compat_opts': ['allow-unsafe-ext'],
@@ -528,8 +457,7 @@ class UniversalDownloader:
                 info = ydl.extract_info(url, download=True)
                 filepath = ydl.prepare_filename(info)
                 if os.path.exists(filepath):
-                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
-                    return {'file': filepath, 'method': 'روش 7', 'size': os.path.getsize(filepath), 'type': file_type}
+                    return {'file': filepath, 'method': 'روش 7', 'size': os.path.getsize(filepath), 'type': 'video'}
         except Exception as e:
             logger.error(f"روش 7 خطا: {e}")
         return None
@@ -540,56 +468,10 @@ class UniversalDownloader:
     def method_9_ytdlp_cookie(self, url):
         if not os.path.exists('cookies.txt'):
             return None
-        
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"cookie_{unique}.%(ext)s")
-        
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': output,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'cookiefile': 'cookies.txt',
-            'compat_opts': ['allow-unsafe-ext'],
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filepath = ydl.prepare_filename(info)
-                if os.path.exists(filepath):
-                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
-                    return {'file': filepath, 'method': 'روش 9', 'size': os.path.getsize(filepath), 'type': file_type}
-        except Exception as e:
-            logger.error(f"روش 9 خطا: {e}")
-        return None
+        return self._download_with_ydl(url, 'best', 'روش 9')
     
     def method_10_ytdlp_bypass(self, url):
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"bypass_{unique}.%(ext)s")
-        
-        ydl_opts = {
-            'format': 'best',
-            'outtmpl': output,
-            'noplaylist': True,
-            'quiet': True,
-            'no_warnings': True,
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            'compat_opts': ['allow-unsafe-ext'],
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                filepath = ydl.prepare_filename(info)
-                if os.path.exists(filepath):
-                    file_type = 'image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video'
-                    return {'file': filepath, 'method': 'روش 10', 'size': os.path.getsize(filepath), 'type': file_type}
-        except Exception as e:
-            logger.error(f"روش 10 خطا: {e}")
-        return None
+        return self._download_with_ydl(url, 'best', 'روش 10')
     
     def method_11_subprocess_best(self, url):
         return self._download_with_subprocess(url, 'best', 'روش 11')
@@ -601,7 +483,7 @@ class UniversalDownloader:
         return self._download_with_subprocess(url, 'bestaudio', 'روش 13', is_audio=True)
     
     def method_14_ytdlp_fallback(self, url):
-        formats = ['worst', 'worstaudio', 'best']
+        formats = ['worst', 'worstaudio']
         for fmt in formats:
             try:
                 result = self._download_with_ydl(url, fmt, 'روش 14')
@@ -612,47 +494,12 @@ class UniversalDownloader:
         return None
     
     def method_15_ytdlp_ultimate(self, url):
-        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
-            img_result = self._download_image_with_ytdlp(url)
-            if img_result:
-                return img_result
-        
-        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
-        output = os.path.join(DOWNLOAD_PATH, f"ultimate_{unique}.mp4")
-        
-        try:
-            cmd = [
-                'yt-dlp',
-                '--ignore-errors',
-                '--no-check-certificate',
-                '--prefer-insecure',
-                '--user-agent', random.choice(USER_AGENTS),
-                '--extractor-args', 'youtube:player_client=android_embedded',
-                '--geo-bypass',
-                '-f', 'best',
-                '-o', output,
-                '--no-playlist',
-                '--quiet',
-                '--compat-options', 'allow-unsafe-ext',
-                url
-            ]
-            
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode == 0 and os.path.exists(output):
-                return {'file': output, 'method': 'روش 15', 'size': os.path.getsize(output), 'type': 'video'}
-        except Exception as e:
-            logger.error(f"روش 15 خطا: {e}")
-        return None
+        return self._download_with_ydl(url, 'bestvideo+bestaudio/best', 'روش 15')
     
     def method_16_ytdlp_impersonate(self, url):
-        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
-            img_result = self._download_image_with_ytdlp(url)
-            if img_result:
-                return img_result
-        
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         
-        impersonate_targets = ['chrome', 'chrome-120', 'safari', 'edge', 'firefox']
+        impersonate_targets = ['chrome', 'chrome-120', 'safari', 'edge']
         
         for target in impersonate_targets:
             output = os.path.join(DOWNLOAD_PATH, f"impersonate_{target}_{unique}.%(ext)s")
@@ -663,9 +510,7 @@ class UniversalDownloader:
                 'noplaylist': True,
                 'quiet': True,
                 'no_warnings': True,
-                'retries': 10,
-                'fragment_retries': 10,
-                'socket_timeout': 30,
+                'retries': 20,
                 'impersonate': target,
                 'user_agent': random.choice(USER_AGENTS),
                 'compat_opts': ['allow-unsafe-ext'],
@@ -681,8 +526,7 @@ class UniversalDownloader:
                         filepath = ydl.prepare_filename(info)
                     
                     if os.path.exists(filepath):
-                        file_type = 'video' if not filepath.lower().endswith(('.mp3', '.m4a')) else 'audio'
-                        return {'file': filepath, 'method': f'روش 16 (Impersonate-{target})', 'size': os.path.getsize(filepath), 'type': file_type}
+                        return {'file': filepath, 'method': f'روش 16 ({target})', 'size': os.path.getsize(filepath), 'type': 'video'}
             except Exception as e:
                 logger.error(f"خطا در impersonate {target}: {e}")
                 continue
@@ -696,7 +540,7 @@ class UniversalDownloader:
         
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         
-        clients = ['android', 'ios', 'web', 'android_embedded', 'web_embedded']
+        clients = ['android', 'ios', 'web', 'android_embedded']
         
         for client in clients:
             try:
@@ -706,10 +550,12 @@ class UniversalDownloader:
                     'format': 'bestvideo+bestaudio/best',
                     'outtmpl': output,
                     'noplaylist': True,
-                    'quiet': False,
-                    'no_warnings': False,
-                    'verbose': True,
-                    'retries': 10,
+                    'quiet': True,
+                    'no_warnings': True,
+                    'retries': 20,
+                    'fragment_retries': 20,
+                    'socket_timeout': 120,
+                    'geo_bypass': True,
                     'compat_opts': ['allow-unsafe-ext'],
                     'extractor_args': {'youtube': {'player_client': [client]}},
                     'user_agent': random.choice(USER_AGENTS),
@@ -726,7 +572,7 @@ class UniversalDownloader:
                         filepath = ydl.prepare_filename(info)
                     
                     if os.path.exists(filepath):
-                        logger.info(f"دانلود یوتیوب با کلاینت {client} موفق بود: {filepath}")
+                        logger.info(f"دانلود یوتیوب با کلاینت {client} موفق بود")
                         return {'file': filepath, 'method': f'روش 17 (YouTube-{client})', 'size': os.path.getsize(filepath), 'type': 'video'}
             except Exception as e:
                 logger.error(f"خطا در کلاینت یوتیوب {client}: {e}")
@@ -736,33 +582,40 @@ class UniversalDownloader:
     
     def method_18_soundcloud_specific(self, url):
         """روش مخصوص ساوندکلاود"""
-        if 'soundcloud.com' not in url:
+        if 'soundcloud.com' not in url and 'on.soundcloud.com' not in url:
             return None
         
+        # رفع لینک کوتاه ساوندکلاود
+        try:
+            if 'on.soundcloud.com' in url:
+                response = requests.head(url, allow_redirects=True, timeout=10)
+                url = response.url
+                logger.info(f"لینک ساوندکلاود تبدیل شد: {url}")
+        except:
+            pass
+        
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
+        output = os.path.join(DOWNLOAD_PATH, f"soundcloud_{unique}.%(ext)s")
+        
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output,
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'retries': 20,
+            'compat_opts': ['allow-unsafe-ext'],
+            'user_agent': random.choice(USER_AGENTS),
+        }
+        
+        if HAS_FFMPEG:
+            ydl_opts['postprocessors'] = [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }]
         
         try:
-            output = os.path.join(DOWNLOAD_PATH, f"soundcloud_{unique}.%(ext)s")
-            
-            ydl_opts = {
-                'format': 'bestaudio/best',
-                'outtmpl': output,
-                'noplaylist': True,
-                'quiet': False,
-                'no_warnings': False,
-                'verbose': True,
-                'retries': 10,
-                'compat_opts': ['allow-unsafe-ext'],
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': '192',
-                }],
-                'user_agent': random.choice(USER_AGENTS),
-            }
-            
-            logger.info(f"شروع دانلود از ساوندکلاود: {url}")
-            
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
                 
@@ -771,10 +624,10 @@ class UniversalDownloader:
                 else:
                     filepath = ydl.prepare_filename(info)
                 
-                filepath = os.path.splitext(filepath)[0] + '.mp3'
+                if HAS_FFMPEG:
+                    filepath = os.path.splitext(filepath)[0] + '.mp3'
                 
                 if os.path.exists(filepath):
-                    logger.info(f"دانلود ساوندکلاود موفق بود: {filepath}")
                     return {'file': filepath, 'method': 'روش 18 (SoundCloud)', 'size': os.path.getsize(filepath), 'type': 'audio'}
         except Exception as e:
             logger.error(f"خطا در دانلود ساوندکلاود: {e}")
@@ -784,31 +637,6 @@ class UniversalDownloader:
     def download(self, url, progress_callback=None, media_type_hint=None):
         """دانلود با توجه به نوع رسانه تشخیص داده شده"""
         logger.info(f"شروع دانلود برای URL: {url}")
-        
-        # اگر نوع رسانه مشخص شده، مستقیماً دانلود کن
-        if media_type_hint == 'audio':
-            if progress_callback:
-                progress_callback("🎵 **تشخیص فرمت صوتی...**")
-            result = self.method_5_audio(url)
-            if result:
-                return result
-        elif media_type_hint == 'image':
-            if progress_callback:
-                progress_callback("🖼️ **تشخیص لینک تصویر...**")
-            img_result = download_image_direct(url)
-            if img_result:
-                return img_result
-            img_result = self._download_image_with_ytdlp(url)
-            if img_result:
-                return img_result
-        
-        # تشخیص خودکار برای بقیه موارد
-        if is_image_url(url):
-            if progress_callback:
-                progress_callback("🖼️ **تشخیص لینک مستقیم تصویر...**")
-            img_result = download_image_direct(url)
-            if img_result:
-                return img_result
         
         for i, method in enumerate(self.methods):
             method_name = self.method_names[i] if i < len(self.method_names) else f"روش {i+1}"
@@ -875,15 +703,16 @@ def start(message):
     except:
         yt_version = "نامشخص"
     
+    ffmpeg_status = "✅" if HAS_FFMPEG else "❌"
+    
     welcome_text = (
         "🎬 **ربات دانلود جهانی - نسخه التیمیت ۲۰۲۶**\n\n"
-        f"📦 **yt-dlp نسخه: {yt_version}**\n\n"
+        f"📦 **yt-dlp نسخه: {yt_version}**\n"
+        f"🔧 **FFmpeg: {ffmpeg_status}**\n\n"
         "✅ **۱۸ روش مختلف دانلود**\n"
-        "✅ **پشتیبانی کامل از یوتیوب و ساوندکلاود**\n"
+        "✅ **روش‌های اختصاصی یوتیوب و ساوندکلاود**\n"
         "✅ **تشخیص خودکار فیلم، صدا یا تصویر**\n"
-        "✅ **بدون نیاز به انتخاب دکمه**\n"
         "✅ پشتیبانی از گروه‌ها و کانال‌ها\n"
-        "✅ تشخیص خودکار تصاویر پینترست و اینستاگرام\n"
         "✅ پشتیبانی از تمام سایت‌ها\n"
         f"✅ حجم مجاز: ۵۰۰ مگابایت\n"
         f"✅ **تعداد دانلود باقی‌مانده امروز: {remaining}**\n\n"
@@ -909,9 +738,11 @@ def admin_panel(message):
     total_users = len(set(user_daily_usage.keys()))
     storage_used, files_count = get_storage_usage()
     storage_mb = storage_used / (1024 * 1024)
+    ffmpeg_status = "✅" if HAS_FFMPEG else "❌"
     
     text = f"👑 **پنل مدیریت ربات**\n\n"
-    text += f"📦 **نسخه yt-dlp:** `{version}`\n"
+    text += f"📦 **yt-dlp نسخه:** `{version}`\n"
+    text += f"🔧 **FFmpeg:** `{ffmpeg_status}`\n"
     text += f"📊 **دانلودهای همزمان:** {len(active_downloads)}\n"
     text += f"👥 **کاربران کل:** {total_users}\n"
     text += f"💾 **فضای مصرفی:** {storage_mb:.1f} MB ({files_count} فایل)\n"
@@ -964,7 +795,8 @@ def admin_callback(call):
         text = f"⚙️ **تنظیمات ربات**\n\n"
         text += f"📊 محدودیت روزانه فعلی: `{DAILY_LIMIT}` دانلود\n"
         text += f"💾 حجم مجاز هر فایل: `{MAX_FILE_SIZE/1024/1024:.0f}` مگابایت\n"
-        text += f"🔒 عضویت اجباری: `{CHANNEL_USERNAME}`\n\n"
+        text += f"🔒 عضویت اجباری: `{CHANNEL_USERNAME}`\n"
+        text += f"🔧 FFmpeg: `{'✅ نصب است' if HAS_FFMPEG else '❌ نصب نیست'}`\n\n"
         text += f"از دکمه‌های زیر برای تغییر استفاده کنید:"
         
         markup = InlineKeyboardMarkup(row_width=2)
@@ -1273,7 +1105,6 @@ def handle(message):
     
     media_type = auto_detect_media_type(url)
     
-    # نقشه نوع محتوا به ایموجی و پیام
     type_map = {
         'video': ('🎥', 'ویدیو'),
         'audio': ('🎵', 'صدا'),
@@ -1309,8 +1140,7 @@ def handle(message):
                 except Exception as e:
                     logger.error(f"خطا در progress_callback: {e}")
             
-            # ارسال نوع رسانه به دانلودر برای بهینه‌سازی
-            result = downloader.download(url, progress_callback, media_type_hint=media_type)
+            result = downloader.download(url, progress_callback)
             add_admin_log("دانلود", f"کاربر {user_id} - {url[:50]}... - {'موفق' if result else 'ناموفق'} - نوع: {media_type}")
             
             if result and os.path.exists(result['file']):
@@ -1382,7 +1212,7 @@ def handle(message):
                     "همه ۱۸ روش امتحان شدند اما موفق نبود.\n"
                     "مشکل ممکنه از این موارد باشه:\n"
                     "• فایل خصوصی یا حذف شده\n"
-                    "• محدودیت شدید کپی‌رایت\n"
+                    "• محدودیت شدید کپی‌رایت (DRM)\n"
                     "• مشکل در سرور\n\n"
                     "لطفاً چند دقیقه بعد دوباره تلاش کنید."
                 )
@@ -1417,12 +1247,10 @@ if __name__ == "__main__":
     print("🎬 ربات دانلود جهانی - نسخه التیمیت ۲۰۲۶")
     print("="*70)
     print("✅ ۱۸ روش مختلف دانلود")
-    print("✅ روش‌های اختصاصی یوتیوب و ساوندکلاود اضافه شد")
-    print("✅ تشخیص خودکار فیلم، صدا یا تصویر (بدون نیاز به کلیک)")
+    print(f"✅ FFmpeg: {'نصب شده' if HAS_FFMPEG else 'نصب نشده'}")
+    print("✅ روش‌های اختصاصی یوتیوب و ساوندکلاود")
+    print("✅ تشخیص خودکار فیلم، صدا یا تصویر")
     print("✅ پشتیبانی کامل از گروه‌ها و کانال‌ها")
-    print("✅ عضویت اجباری در کانال")
-    print("✅ محدودیت روزانه قابل تنظیم")
-    print("✅ پنل ادمین کامل")
     print("="*70)
     
     bot.remove_webhook()
@@ -1432,7 +1260,6 @@ if __name__ == "__main__":
     print(f"✅ Webhook: {WEBHOOK_URL}")
     print("✅ ربات با موفقیت راه‌اندازی شد!")
     print("="*70)
-    print("📌 ویژگی جدید: ۱۸ روش دانلود + روش‌های اختصاصی یوتیوب و ساوندکلاود")
     print("📌 برای ورود به پنل ادمین، دستور /admin را بفرستید")
     print("="*70)
     
