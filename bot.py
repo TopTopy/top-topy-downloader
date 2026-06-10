@@ -1,9 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-GOD MODE DOWNLOADER BOT v20.0
-تلفیق تمام روش‌های دانلود از 20+ پلتفرم
+GOD MODE DOWNLOADER BOT v21.0
+فقط با yt-dlp - بدون API مرده - بدون instaloader
 پشتیبانی از: YouTube, Instagram, TikTok, Pinterest, Twitter, Facebook, Reddit, Vimeo, SoundCloud, Spotify, Twitch, آپارات, تلوبیون, فیلیمو, نماشا
-با 15 روش Fallback + صف هوشمند + کش پیشرفته
 """
 
 import os
@@ -57,7 +56,6 @@ USER_AGENTS = [
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0",
     "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 Chrome/120.0.0.0",
 ]
 
 def get_ua():
@@ -72,24 +70,33 @@ def check_ffmpeg():
         return False
 
 FFMPEG_OK = check_ffmpeg()
-print(f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
+print(f"FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
+
+# ================= به‌روزرسانی خودکار yt-dlp =================
+def update_ytdlp():
+    try:
+        subprocess.run(["pip", "install", "-U", "yt-dlp"], capture_output=True, timeout=60)
+        print("yt-dlp updated")
+    except:
+        pass
+
+threading.Thread(target=update_ytdlp, daemon=True).start()
 
 # ================= کش فایل =================
-def get_cache_key(url, quality='720'):
-    return hashlib.md5(f"{url}_{quality}".encode()).hexdigest()[:16]
+def get_cache_key(url):
+    return hashlib.md5(url.encode()).hexdigest()[:16]
 
-def get_cached_file(url, quality='720'):
-    key = get_cache_key(url, quality)
-    for ext in ['.mp4', '.mp3', '.jpg', '.png', '.gif', '.webm', '.mkv']:
+def get_cached_file(url):
+    key = get_cache_key(url)
+    for ext in ['.mp4', '.mp3', '.jpg', '.png', '.gif', '.webm']:
         path = os.path.join(CACHE_PATH, f"{key}{ext}")
         if os.path.exists(path):
-            os.utime(path, None)
             return path
     return None
 
-def cache_file(file_path, url, quality='720'):
+def cache_file(file_path, url):
     if file_path and os.path.exists(file_path):
-        key = get_cache_key(url, quality)
+        key = get_cache_key(url)
         ext = os.path.splitext(file_path)[1].lower()
         dest = os.path.join(CACHE_PATH, f"{key}{ext}")
         if not os.path.exists(dest):
@@ -98,8 +105,9 @@ def cache_file(file_path, url, quality='720'):
             except:
                 pass
 
-# ================= لایه 1: yt-dlp با Retry (پشتیبانی از 4 کلاینت) =================
-def safe_ytdlp(url, is_audio=False, progress_callback=None):
+# ================= ONLY yt-dlp (موتور اصلی) =================
+def download_with_ytdlp(url, is_audio=False, progress_callback=None):
+    """فقط yt-dlp - تنها روش پایدار"""
     clients = ['android', 'ios', 'web', 'android_embedded']
     
     for attempt in range(MAX_RETRIES):
@@ -123,6 +131,7 @@ def safe_ytdlp(url, is_audio=False, progress_callback=None):
                     'retries': 15,
                     'fragment_retries': 15,
                     'socket_timeout': 30,
+                    'extractor_retries': 5,
                     'user_agent': get_ua(),
                     'extractor_args': {
                         'youtube': {'player_client': [client]},
@@ -131,8 +140,11 @@ def safe_ytdlp(url, is_audio=False, progress_callback=None):
                     },
                 }
                 
+                # کوکی در صورت وجود
                 if os.path.exists('cookies.txt'):
                     ydl_opts['cookiefile'] = 'cookies.txt'
+                else:
+                    ydl_opts['cookiefile'] = None
                 
                 if is_audio and FFMPEG_OK:
                     ydl_opts['postprocessors'] = [{
@@ -157,7 +169,8 @@ def safe_ytdlp(url, is_audio=False, progress_callback=None):
                         filename = os.path.splitext(filename)[0] + '.mp3'
                     if os.path.exists(filename) and os.path.getsize(filename) > 10240:
                         return filename
-            except:
+            except Exception as e:
+                print(f"yt-dlp {client} attempt {attempt+1} failed: {e}")
                 continue
         
         if attempt < MAX_RETRIES - 1:
@@ -165,7 +178,7 @@ def safe_ytdlp(url, is_audio=False, progress_callback=None):
     
     return None
 
-# ================= لایه 2: دانلود مستقیم عکس =================
+# ================= لایه 2: دانلود مستقیم عکس (فال بک) =================
 def download_image_direct(url):
     try:
         unique = f"{int(time.time()*1000)}"
@@ -188,103 +201,6 @@ def download_image_direct(url):
         pass
     return None
 
-# ================= لایه 3: دانلود پینترست =================
-def download_pinterest_direct(url):
-    try:
-        pin_match = re.search(r'/pin/(\d+)', url)
-        if not pin_match:
-            r = requests.get(url, allow_redirects=True, timeout=10)
-            pin_match = re.search(r'/pin/(\d+)', r.url)
-        if pin_match:
-            pin_id = pin_match.group(1)
-            api_url = f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
-            headers = {'User-Agent': get_ua(), 'Accept': 'application/json'}
-            resp = requests.get(api_url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('data') and len(data['data']) > 0:
-                    images = data['data'][0].get('images', {})
-                    for quality in ['orig', '736x', '564x']:
-                        if quality in images:
-                            img_url = images[quality]['url']
-                            unique = f"{int(time.time()*1000)}"
-                            filename = os.path.join(DOWNLOAD_PATH, f"pin_{unique}.jpg")
-                            img_r = requests.get(img_url, headers=headers, stream=True)
-                            if img_r.status_code == 200:
-                                with open(filename, 'wb') as f:
-                                    for chunk in img_r.iter_content(8192):
-                                        if chunk:
-                                            f.write(chunk)
-                                return filename
-    except:
-        pass
-    return safe_ytdlp(url, False, None)
-
-# ================= لایه 4: دانلود آپارات =================
-def download_aparat_direct(url):
-    try:
-        video_id = None
-        patterns = [r'aparat\.com/v/([a-zA-Z0-9]+)', r'aparat\.com/([a-zA-Z0-9]+)']
-        for pattern in patterns:
-            m = re.search(pattern, url)
-            if m:
-                video_id = m.group(1)
-                break
-        
-        if video_id:
-            api_url = f"https://www.aparat.com/etc/api/video/videoID/{video_id}"
-            headers = {'User-Agent': get_ua()}
-            resp = requests.get(api_url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                if 'video' in data and data['video'].get('file'):
-                    video_url = data['video']['file']
-                    unique = f"{int(time.time()*1000)}"
-                    filename = os.path.join(DOWNLOAD_PATH, f"aparat_{unique}.mp4")
-                    vr = requests.get(video_url, headers=headers, stream=True)
-                    if vr.status_code == 200:
-                        with open(filename, 'wb') as f:
-                            for chunk in vr.iter_content(8192):
-                                if chunk:
-                                    f.write(chunk)
-                        return filename
-    except:
-        pass
-    return safe_ytdlp(url, False, None)
-
-# ================= لایه 5: دانلود تلوبیون =================
-def download_telewebion_direct(url):
-    try:
-        program_id = re.search(r'telewebion\.com/program/(\d+)', url)
-        if program_id:
-            api_url = f"https://www.telewebion.com/api/program/{program_id.group(1)}"
-            headers = {'User-Agent': get_ua()}
-            resp = requests.get(api_url, headers=headers, timeout=15)
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get('data', {}).get('video_url'):
-                    video_url = data['data']['video_url']
-                    unique = f"{int(time.time()*1000)}"
-                    filename = os.path.join(DOWNLOAD_PATH, f"telewebion_{unique}.mp4")
-                    vr = requests.get(video_url, headers=headers, stream=True)
-                    if vr.status_code == 200:
-                        with open(filename, 'wb') as f:
-                            for chunk in vr.iter_content(8192):
-                                if chunk:
-                                    f.write(chunk)
-                        return filename
-    except:
-        pass
-    return safe_ytdlp(url, False, None)
-
-# ================= لایه 6: دانلود فیلیمو =================
-def download_filimo_direct(url):
-    return safe_ytdlp(url, False, None)
-
-# ================= لایه 7: دانلود نماشا =================
-def download_namasha_direct(url):
-    return safe_ytdlp(url, False, None)
-
 # ================= رفع لینک کوتاه =================
 def resolve_short_url(url):
     try:
@@ -296,26 +212,32 @@ def resolve_short_url(url):
 # ================= تشخیص پلتفرم =================
 def detect_platform(url):
     u = url.lower()
-    platforms = {
-        'یوتیوب': ['youtube.com', 'youtu.be'],
-        'اینستاگرام': ['instagram.com', 'instagr.am'],
-        'تیک‌تاک': ['tiktok.com', 'vt.tiktok.com'],
-        'پینترست': ['pinterest.com', 'pin.it'],
-        'توییتر': ['twitter.com', 'x.com'],
-        'فیسبوک': ['facebook.com', 'fb.com'],
-        'ردیت': ['reddit.com', 'redd.it'],
-        'ویمئو': ['vimeo.com'],
-        'ساوندکلاود': ['soundcloud.com'],
-        'اسپاتیفای': ['spotify.com'],
-        'تویچ': ['twitch.tv'],
-        'آپارات': ['aparat.com'],
-        'تلوبیون': ['telewebion.com'],
-        'فیلیمو': ['filimo.com', 'filimo.ir'],
-        'نماشا': ['namasha.com'],
-    }
-    for platform, domains in platforms.items():
-        if any(d in u for d in domains):
-            return platform
+    if 'youtube.com' in u or 'youtu.be' in u:
+        return 'یوتیوب'
+    if 'instagram.com' in u:
+        return 'اینستاگرام'
+    if 'tiktok.com' in u or 'vt.tiktok.com' in u:
+        return 'تیک‌تاک'
+    if 'pinterest.com' in u or 'pin.it' in u:
+        return 'پینترست'
+    if 'twitter.com' in u or 'x.com' in u:
+        return 'توییتر'
+    if 'facebook.com' in u:
+        return 'فیسبوک'
+    if 'reddit.com' in u:
+        return 'ردیت'
+    if 'vimeo.com' in u:
+        return 'ویمئو'
+    if 'soundcloud.com' in u:
+        return 'ساوندکلاود'
+    if 'spotify.com' in u:
+        return 'اسپاتیفای'
+    if 'twitch.tv' in u:
+        return 'تویچ'
+    if 'aparat.com' in u:
+        return 'آپارات'
+    if 'telewebion.com' in u:
+        return 'تلوبیون'
     return 'سایر'
 
 def detect_content_type(url):
@@ -335,7 +257,7 @@ def extract_url(text):
         return url
     return None
 
-# ================= موتور اصلی دانلود =================
+# ================= موتور اصلی دانلود (Pipeline ساده) =================
 def download_media(url, is_audio=False, progress_callback=None):
     # بررسی کش
     cached = get_cached_file(url)
@@ -344,54 +266,16 @@ def download_media(url, is_audio=False, progress_callback=None):
     
     # رفع لینک کوتاه
     url = resolve_short_url(url)
-    u = url.lower()
     
-    result = None
-    
-    # عکس مستقیم
-    if any(ext in u for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
+    # عکس مستقیم (فال بک)
+    if any(ext in url.lower() for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
         result = download_image_direct(url)
         if result:
             cache_file(result, url)
             return result
     
-    # آپارات
-    if 'aparat.com' in u:
-        result = download_aparat_direct(url)
-        if result:
-            cache_file(result, url)
-            return result
-    
-    # تلوبیون
-    if 'telewebion.com' in u:
-        result = download_telewebion_direct(url)
-        if result:
-            cache_file(result, url)
-            return result
-    
-    # فیلیمو
-    if 'filimo.com' in u:
-        result = download_filimo_direct(url)
-        if result:
-            cache_file(result, url)
-            return result
-    
-    # نماشا
-    if 'namasha.com' in u:
-        result = download_namasha_direct(url)
-        if result:
-            cache_file(result, url)
-            return result
-    
-    # پینترست
-    if 'pinterest.com' in u or 'pin.it' in u:
-        result = download_pinterest_direct(url)
-        if result:
-            cache_file(result, url)
-            return result
-    
-    # سایر پلتفرم‌ها با yt-dlp
-    result = safe_ytdlp(url, is_audio, progress_callback)
+    # فقط yt-dlp برای همه چیز
+    result = download_with_ytdlp(url, is_audio, progress_callback)
     if result:
         cache_file(result, url)
         return result
@@ -490,14 +374,14 @@ for _ in range(MAX_WORKERS):
 def start_cmd(message):
     ff_status = "✅" if FFMPEG_OK else "❌"
     welcome = (
-        "💣 **GOD MODE BOT v20.0**\n\n"
-        "✅ پشتیبانی از 20+ پلتفرم:\n"
+        "💣 **GOD MODE BOT v21.0**\n\n"
+        "✅ فقط yt-dlp (پایدارترین روش)\n"
+        "✅ پشتیبانی از:\n"
         "   ├ یوتیوب | اینستاگرام | تیک‌تاک\n"
         "   ├ پینترست | توییتر | فیسبوک\n"
         "   ├ ردیت | ویمئو | ساوندکلاود\n"
         "   ├ اسپاتیفای | تویچ | آپارات\n"
         "   └ تلوبیون | فیلیمو | نماشا\n\n"
-        "✅ 15 روش Fallback + Retry هوشمند\n"
         f"🔧 FFmpeg: {ff_status}\n"
         f"📥 حداکثر حجم: {MAX_FILE_SIZE//(1024*1024)}MB\n\n"
         "📌 لینک را بفرستید..."
@@ -566,7 +450,7 @@ def handle_msg(message):
     
     with active_lock:
         if uid in active_downloads:
-            bot.reply_to(message, "⏳ در حال دانلود... لطفاً صبر کنید.")
+            bot.reply_to(message, "⏳ در حال دانلود...")
             return
     
     allowed, rem = check_rate_limit(uid)
@@ -575,7 +459,7 @@ def handle_msg(message):
         return
     
     if download_queue.qsize() >= MAX_QUEUE_SIZE:
-        bot.reply_to(message, "⚠️ صف دانلود پر است!")
+        bot.reply_to(message, "⚠️ صف پر است!")
         return
     
     url = extract_url(message.text)
@@ -609,7 +493,7 @@ def handle_msg(message):
 # ================= سلامت سرویس =================
 @app.route("/", methods=["GET"])
 def home():
-    return "💣 GOD MODE BOT v20.0 ACTIVE", 200
+    return "💣 GOD MODE BOT v21.0 ACTIVE", 200
 
 @app.route("/health", methods=["GET"])
 def health():
@@ -623,11 +507,10 @@ def health():
 # ================= اجرا =================
 if __name__ == "__main__":
     print("="*60)
-    print("💣 GOD MODE BOT v20.0")
-    print(f"✅ FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
-    print(f"✅ Workers: {MAX_WORKERS}")
-    print(f"✅ Queue: {MAX_QUEUE_SIZE}")
-    print(f"✅ Max Size: {MAX_FILE_SIZE//(1024*1024)}MB")
+    print("💣 GOD MODE BOT v21.0")
+    print(f"FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
+    print(f"Workers: {MAX_WORKERS}")
+    print(f"Queue: {MAX_QUEUE_SIZE}")
     print("="*60)
     
     try:
