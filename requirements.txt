@@ -2,4 +2,3 @@ pyTelegramBotAPI==4.20.0
 yt-dlp>=2025.04.09
 requests==2.31.0
 flask==3.0.3
-gunicorn==21.2.0
