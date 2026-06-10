@@ -1,1 +1,1 @@
-web: gunicorn bot:app
+web: gunicorn bot:app --workers 1 --threads 4 --timeout 500 --max-requests 1000
