@@ -6,6 +6,9 @@ import threading
 import json
 import subprocess
 import random
+import logging
+import sys
+from io import StringIO
 from datetime import datetime, timedelta
 from flask import Flask, request
 import telebot
@@ -13,30 +16,43 @@ from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ForceReply
 import yt_dlp
 import requests
 from urllib.parse import urlparse
+import shutil
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHYL2VGTqTIVCscKd7QJNAvY0gEbVEEeg4"
 ADMIN_ID = 8226091292
-CHANNEL_USERNAME = "@top_topy_downloader"  # نام کاربری کانال برای عضویت اجباری
+CHANNEL_USERNAME = "@top_topy_downloader"
 MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
+LOGS_PATH = "logs"
 WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
-# محدودیت روزانه
-DAILY_LIMIT = 20  # تعداد دانلود در روز برای هر کاربر
+DAILY_LIMIT = 20
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+os.makedirs(LOGS_PATH, exist_ok=True)
+
+# ================= تنظیمات لاگ =================
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(os.path.join(LOGS_PATH, 'bot.log')),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
 user_links = {}
 active_downloads = {}
-user_daily_usage = {}  # ذخیره تعداد دانلود روزانه هر کاربر
+user_daily_usage = {}
+admin_logs = []
 lock = threading.Lock()
 
-# ================= User-Agent های مختلف =================
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -45,39 +61,27 @@ USER_AGENTS = [
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 ]
 
-# ================= بررسی عضویت در کانال =================
+# ================= توابع کمکی =================
+def add_admin_log(action, details):
+    log_entry = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "details": details
+    }
+    admin_logs.insert(0, log_entry)
+    while len(admin_logs) > 100:
+        admin_logs.pop()
+    logger.info(f"[ADMIN] {action}: {details}")
+
 def is_member(user_id):
-    """بررسی اینکه کاربر در کانال عضو است یا خیر"""
     try:
         chat_member = bot.get_chat_member(CHANNEL_USERNAME, user_id)
         return chat_member.status in ['member', 'administrator', 'creator']
     except Exception as e:
-        print(f"خطا در بررسی عضویت: {e}")
+        logger.error(f"خطا در بررسی عضویت: {e}")
         return False
 
-def check_membership_and_proceed(message, callback_func, *args, **kwargs):
-    """بررسی عضویت قبل از ادامه روند"""
-    user_id = message.from_user.id
-    
-    if is_member(user_id):
-        callback_func(message, *args, **kwargs)
-    else:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
-        markup.add(InlineKeyboardButton("✅ عضویت پیدا کردم", callback_data="check_membership"))
-        
-        bot.reply_to(
-            message,
-            f"🔒 **برای استفاده از ربات ابتدا باید در کانال ما عضو شوید!**\n\n"
-            f"📢 **کانال:** {CHANNEL_USERNAME}\n\n"
-            f"پس از عضویت، دکمه «عضویت پیدا کردم» را بزنید.",
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-
-# ================= بررسی محدودیت روزانه =================
 def check_daily_limit(user_id):
-    """بررسی محدودیت دانلود روزانه کاربر"""
     today = datetime.now().strftime("%Y%m%d")
     
     if user_id not in user_daily_usage:
@@ -89,7 +93,6 @@ def check_daily_limit(user_id):
     return user_daily_usage[user_id]["count"] < DAILY_LIMIT
 
 def increment_daily_usage(user_id):
-    """افزایش شمارش دانلود روزانه کاربر"""
     today = datetime.now().strftime("%Y%m%d")
     
     if user_id not in user_daily_usage:
@@ -102,7 +105,6 @@ def increment_daily_usage(user_id):
     return user_daily_usage[user_id]["count"]
 
 def get_remaining_limit(user_id):
-    """دریافت تعداد دانلود باقی مانده امروز"""
     today = datetime.now().strftime("%Y%m%d")
     
     if user_id not in user_daily_usage or user_daily_usage[user_id]["date"] != today:
@@ -110,7 +112,32 @@ def get_remaining_limit(user_id):
     
     return DAILY_LIMIT - user_daily_usage[user_id]["count"]
 
-# ================= تشخیص پلتفرم =================
+def get_storage_usage():
+    total_size = 0
+    files_count = 0
+    for dirpath, dirnames, filenames in os.walk(DOWNLOAD_PATH):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.exists(fp):
+                total_size += os.path.getsize(fp)
+                files_count += 1
+    return total_size, files_count
+
+def clean_storage(keep_days=1):
+    deleted_count = 0
+    deleted_size = 0
+    cutoff_time = time.time() - (keep_days * 24 * 3600)
+    
+    for dirpath, dirnames, filenames in os.walk(DOWNLOAD_PATH):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.exists(fp):
+                if os.path.getmtime(fp) < cutoff_time:
+                    deleted_size += os.path.getsize(fp)
+                    os.remove(fp)
+                    deleted_count += 1
+    return deleted_count, deleted_size
+
 def detect_platform(url):
     url = url.lower()
     platforms = {
@@ -140,15 +167,9 @@ def detect_platform(url):
                 return platform.capitalize()
     return "Other"
 
-# ================= ابزار لینک =================
 def extract_url(text):
     urls = re.findall(r'https?://\S+', text)
     return urls[0] if urls else None
-
-def clean_url(url):
-    url = re.sub(r'\?si=[^&]+', '', url)
-    url = re.sub(r'&si=[^&]+', '', url)
-    return url
 
 def resolve_short_url(url):
     try:
@@ -161,9 +182,7 @@ def resolve_short_url(url):
     except:
         return url
 
-# ================= تشخیص تصویر یا ویدیو =================
 def is_image_url(url):
-    """تشخیص لینک تصویر از روی پسوند"""
     image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg']
     url_lower = url.lower()
     for ext in image_extensions:
@@ -172,7 +191,6 @@ def is_image_url(url):
     return False
 
 def download_image_direct(url):
-    """دانلود مستقیم تصویر از لینک"""
     try:
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         
@@ -200,10 +218,61 @@ def download_image_direct(url):
         
         return None
     except Exception as e:
-        print(f"خطا در دانلود تصویر: {e}")
+        logger.error(f"خطا در دانلود تصویر: {e}")
         return None
 
-# ================= موتور دانلود جهانی با ۱۵ روش =================
+# ================= تشخیص خودکار نوع رسانه =================
+def auto_detect_media_type(url):
+    """تشخیص خودکار اینکه لینک برای فیلم است، صدا است یا تصویر"""
+    
+    # اول بررسی پسوند تصویر
+    if is_image_url(url):
+        return 'image'
+    
+    # بررسی پسوند صوتی
+    audio_extensions = ['.mp3', '.m4a', '.aac', '.flac', '.ogg', '.wav', '.opus']
+    url_lower = url.lower()
+    for ext in audio_extensions:
+        if ext in url_lower:
+            return 'audio'
+    
+    # بررسی پسوند ویدیویی
+    video_extensions = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv']
+    for ext in video_extensions:
+        if ext in url_lower:
+            return 'video'
+    
+    # برای پلتفرم‌های خاص، با yt-dlp چک کن
+    try:
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'simulate': True,
+            'extract_flat': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            # بررسی وجود فرمت صوتی فقط
+            if info.get('formats'):
+                has_video = any(f.get('vcodec') != 'none' for f in info['formats'])
+                has_audio = any(f.get('acodec') != 'none' for f in info['formats'])
+                
+                if has_audio and not has_video:
+                    return 'audio'
+                elif has_video:
+                    return 'video'
+            
+            # بررسی تامبل‌نیل‌ها برای تصاویر
+            if info.get('thumbnails') and not info.get('formats'):
+                return 'image'
+    except:
+        pass
+    
+    # پیش‌فرض ویدیو
+    return 'video'
+
+# ================= موتور دانلود جهانی با ۱۶ روش =================
 class UniversalDownloader:
     def __init__(self):
         self.methods = [
@@ -222,6 +291,7 @@ class UniversalDownloader:
             self.method_13_subprocess_audio,
             self.method_14_ytdlp_fallback,
             self.method_15_ytdlp_ultimate,
+            self.method_16_ytdlp_impersonate,
         ]
         self.method_names = [
             "بهترین کیفیت",
@@ -239,10 +309,10 @@ class UniversalDownloader:
             "subprocess صوتی",
             "fallback نهایی",
             "التمیت روش نهایی",
+            "Impersonate (جدید)",
         ]
     
     def _detect_media_type(self, url):
-        """تشخیص نوع رسانه (تصویر یا ویدیو)"""
         if is_image_url(url):
             return 'image'
         
@@ -267,7 +337,6 @@ class UniversalDownloader:
         return 'video'
     
     def _download_image_with_ytdlp(self, url):
-        """دانلود تصویر با yt-dlp (برای پینترست و اینستاگرام)"""
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         output = os.path.join(DOWNLOAD_PATH, f"image_ytdlp_{unique}.%(ext)s")
         
@@ -295,12 +364,11 @@ class UniversalDownloader:
                         os.remove(filepath)
                         return None
         except Exception as e:
-            print(f"خطا در دانلود تصویر با yt-dlp: {e}")
+            logger.error(f"خطا در دانلود تصویر با yt-dlp: {e}")
         
         return None
     
     def _download_with_ydl(self, url, format_spec, method_name, is_audio=False):
-        """تابع پایه برای دانلود با yt-dlp"""
         if not is_audio:
             media_type = self._detect_media_type(url)
             if media_type == 'image':
@@ -349,11 +417,10 @@ class UniversalDownloader:
                     file_type = 'audio' if is_audio else ('image' if filepath.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')) else 'video')
                     return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath), 'type': file_type}
         except Exception as e:
-            print(f"خطا در {method_name}: {e}")
+            logger.error(f"خطا در {method_name}: {e}")
         return None
     
     def _download_with_subprocess(self, url, format_spec, method_name, is_audio=False):
-        """تابع پایه برای دانلود با subprocess"""
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         
         if is_audio:
@@ -562,9 +629,71 @@ class UniversalDownloader:
             pass
         return None
     
-    def download(self, url, progress_callback=None):
-        """تلاش با همه ۱۵ روش + تشخیص تصویر"""
+    def method_16_ytdlp_impersonate(self, url):
+        if 'pinterest.com' in url or 'pin.it' in url or 'instagram.com' in url:
+            img_result = self._download_image_with_ytdlp(url)
+            if img_result:
+                return img_result
         
+        unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
+        
+        impersonate_targets = ['chrome', 'chrome-120', 'safari', 'edge', 'firefox']
+        
+        for target in impersonate_targets:
+            output = os.path.join(DOWNLOAD_PATH, f"impersonate_{target}_{unique}.%(ext)s")
+            
+            ydl_opts = {
+                'format': 'bestvideo+bestaudio/best',
+                'outtmpl': output,
+                'noplaylist': True,
+                'quiet': True,
+                'no_warnings': True,
+                'retries': 10,
+                'fragment_retries': 10,
+                'socket_timeout': 30,
+                'impersonate': target,
+                'user_agent': random.choice(USER_AGENTS),
+            }
+            
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    
+                    if 'requested_downloads' in info and info['requested_downloads']:
+                        filepath = info['requested_downloads'][0]['filepath']
+                    else:
+                        filepath = ydl.prepare_filename(info)
+                    
+                    if os.path.exists(filepath):
+                        file_type = 'video' if not filepath.lower().endswith(('.mp3', '.m4a')) else 'audio'
+                        return {'file': filepath, 'method': f'روش 16 (Impersonate-{target})', 'size': os.path.getsize(filepath), 'type': file_type}
+            except Exception as e:
+                logger.error(f"خطا در impersonate {target}: {e}")
+                continue
+        
+        return None
+    
+    def download(self, url, progress_callback=None, media_type_hint=None):
+        """دانلود با توجه به نوع رسانه تشخیص داده شده"""
+        
+        # اگر نوع رسانه مشخص شده، مستقیماً دانلود کن
+        if media_type_hint == 'audio':
+            if progress_callback:
+                progress_callback("🎵 **تشخیص فرمت صوتی...**")
+            result = self.method_5_audio(url)
+            if result:
+                return result
+        elif media_type_hint == 'image':
+            if progress_callback:
+                progress_callback("🖼️ **تشخیص لینک تصویر...**")
+            img_result = download_image_direct(url)
+            if img_result:
+                return img_result
+            img_result = self._download_image_with_ytdlp(url)
+            if img_result:
+                return img_result
+        
+        # تشخیص خودکار برای بقیه موارد
         if is_image_url(url):
             if progress_callback:
                 progress_callback("🖼️ **تشخیص لینک مستقیم تصویر...**")
@@ -583,7 +712,7 @@ class UniversalDownloader:
                 if result:
                     return result
             except Exception as e:
-                print(f"خطا در روش {i+1}: {e}")
+                logger.error(f"خطا در روش {i+1}: {e}")
             
             time.sleep(1)
         
@@ -591,14 +720,16 @@ class UniversalDownloader:
 
 downloader = UniversalDownloader()
 
-# ================= کیبورد =================
-def platform_keyboard():
+# ================= کیبورد ادمین =================
+def admin_main_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton("🎥 ویدیو", callback_data="video"),
-        InlineKeyboardButton("🎵 فقط صدا", callback_data="audio"),
-        InlineKeyboardButton("🖼️ تصویر", callback_data="image"),
-        InlineKeyboardButton("❌ لغو", callback_data="cancel")
+        InlineKeyboardButton("📊 آمار و وضعیت", callback_data="admin_stats"),
+        InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin_settings"),
+        InlineKeyboardButton("💾 فضای ذخیره‌سازی", callback_data="admin_storage"),
+        InlineKeyboardButton("📜 لاگ‌ها", callback_data="admin_logs"),
+        InlineKeyboardButton("👥 مدیریت کاربران", callback_data="admin_users"),
+        InlineKeyboardButton("🔄 ریست ربات", callback_data="admin_restart")
     )
     return markup
 
@@ -623,21 +754,311 @@ def start(message):
         return
     
     remaining = get_remaining_limit(user_id)
+    
+    try:
+        result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        yt_version = result.stdout.strip() if result.returncode == 0 else "نامشخص"
+    except:
+        yt_version = "نامشخص"
+    
     welcome_text = (
-        "🎬 **ربات دانلود جهانی - نسخه التیمیت**\n\n"
-        "✅ **۱۵ روش مختلف دانلود**\n"
-        "✅ **پشتیبانی از تصاویر و ویدیوها**\n"
+        "🎬 **ربات دانلود جهانی - نسخه التیمیت ۲۰۲۶**\n\n"
+        f"📦 **yt-dlp نسخه: {yt_version}**\n\n"
+        "✅ **۱۶ روش مختلف دانلود**\n"
+        "✅ **تشخیص خودکار فیلم، صدا یا تصویر**\n"
+        "✅ **بدون نیاز به انتخاب دکمه**\n"
+        "✅ پشتیبانی از گروه‌ها و کانال‌ها\n"
         "✅ تشخیص خودکار تصاویر پینترست و اینستاگرام\n"
         "✅ پشتیبانی از تمام سایت‌ها\n"
         "✅ یوتیوب | اینستاگرام | تیک‌تاک | توییتر | فیسبوک\n"
-        "✅ آپارات | تلوبیون | فیلیمو | و هزاران سایت دیگر\n"
         f"✅ حجم مجاز: ۵۰۰ مگابایت\n"
         f"✅ **تعداد دانلود باقی‌مانده امروز: {remaining}**\n\n"
         "📌 **فقط کافیه لینک رو بفرستی!**"
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
-# ================= بررسی عضویت در کالبک =================
+# ================= پنل ادمین =================
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+    if message.from_user.id != ADMIN_ID:
+        bot.reply_to(message, "⛔ دسترسی ندارید!")
+        return
+    
+    add_admin_log("ورود به پنل", f"ادمین وارد پنل شد")
+    
+    try:
+        result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
+        version = result.stdout.strip() if result.returncode == 0 else "نامشخص"
+    except:
+        version = "نامشخص"
+    
+    total_users = len(set(user_daily_usage.keys()))
+    storage_used, files_count = get_storage_usage()
+    storage_mb = storage_used / (1024 * 1024)
+    
+    text = f"👑 **پنل مدیریت ربات**\n\n"
+    text += f"📦 **نسخه yt-dlp:** `{version}`\n"
+    text += f"📊 **دانلودهای همزمان:** {len(active_downloads)}\n"
+    text += f"👥 **کاربران کل:** {total_users}\n"
+    text += f"💾 **فضای مصرفی:** {storage_mb:.1f} MB ({files_count} فایل)\n"
+    text += f"📅 **محدودیت روزانه:** {DAILY_LIMIT} دانلود\n\n"
+    
+    today = datetime.now().strftime("%Y%m%d")
+    today_users = sum(1 for u in user_daily_usage.values() if u["date"] == today)
+    today_downloads = sum(u["count"] for u in user_daily_usage.values() if u["date"] == today)
+    text += f"**آمار امروز:**\n"
+    text += f"📊 کاربران: {today_users}\n"
+    text += f"📥 دانلودها: {today_downloads}\n"
+    text += f"📈 میانگین: {today_downloads/today_users if today_users > 0 else 0:.1f}"
+
+    bot.send_message(message.chat.id, text, reply_markup=admin_main_keyboard(), parse_mode="Markdown")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def admin_callback(call):
+    if call.from_user.id != ADMIN_ID:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید!")
+        return
+    
+    if call.data == "admin_stats":
+        today = datetime.now().strftime("%Y%m%d")
+        today_users = sum(1 for u in user_daily_usage.values() if u["date"] == today)
+        today_downloads = sum(u["count"] for u in user_daily_usage.values() if u["date"] == today)
+        
+        top_users = sorted(user_daily_usage.items(), key=lambda x: x[1]["count"], reverse=True)[:5]
+        top_text = ""
+        for i, (uid, data) in enumerate(top_users, 1):
+            if data["date"] == today:
+                top_text += f"{i}. `{uid}` → {data['count']} دانلود\n"
+        
+        text = f"📊 **آمار دقیق ربات**\n\n"
+        text += f"📅 تاریخ: {datetime.now().strftime('%Y/%m/%d')}\n"
+        text += f"👥 کاربران امروز: {today_users}\n"
+        text += f"📥 دانلودهای امروز: {today_downloads}\n"
+        text += f"📊 میانگین دانلود هر کاربر: {today_downloads/today_users if today_users > 0 else 0:.1f}\n\n"
+        text += f"🏆 **۵ کاربر برتر امروز:**\n{top_text if top_text else 'هیچ کاربری'}"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
+        
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_settings":
+        text = f"⚙️ **تنظیمات ربات**\n\n"
+        text += f"📊 محدودیت روزانه فعلی: `{DAILY_LIMIT}` دانلود\n"
+        text += f"💾 حجم مجاز هر فایل: `{MAX_FILE_SIZE/1024/1024:.0f}` مگابایت\n"
+        text += f"🔒 عضویت اجباری: `{CHANNEL_USERNAME}`\n\n"
+        text += f"از دکمه‌های زیر برای تغییر استفاده کنید:"
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("➕ افزایش محدودیت", callback_data="admin_inc_limit"),
+            InlineKeyboardButton("➖ کاهش محدودیت", callback_data="admin_dec_limit"),
+            InlineKeyboardButton("📝 تغییر محدودیت عددی", callback_data="admin_set_limit"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_inc_limit":
+        global DAILY_LIMIT
+        DAILY_LIMIT += 5
+        add_admin_log("تغییر محدودیت", f"افزایش به {DAILY_LIMIT}")
+        bot.answer_callback_query(call.id, f"محدودیت به {DAILY_LIMIT} افزایش یافت!")
+        admin_panel(call.message)
+    
+    elif call.data == "admin_dec_limit":
+        global DAILY_LIMIT
+        if DAILY_LIMIT > 5:
+            DAILY_LIMIT -= 5
+            add_admin_log("تغییر محدودیت", f"کاهش به {DAILY_LIMIT}")
+            bot.answer_callback_query(call.id, f"محدودیت به {DAILY_LIMIT} کاهش یافت!")
+        else:
+            bot.answer_callback_query(call.id, "محدودیت نمی‌تواند کمتر از ۵ باشد!", show_alert=True)
+        admin_panel(call.message)
+    
+    elif call.data == "admin_set_limit":
+        msg = bot.send_message(call.message.chat.id, "لطفاً محدودیت روزانه جدید را به عدد وارد کنید:")
+        bot.register_next_step_handler(msg, set_daily_limit, call.message)
+    
+    elif call.data == "admin_storage":
+        storage_used, files_count = get_storage_usage()
+        storage_mb = storage_used / (1024 * 1024)
+        
+        text = f"💾 **مدیریت فضای ذخیره‌سازی**\n\n"
+        text += f"📊 فضای مصرفی: `{storage_mb:.1f}` مگابایت\n"
+        text += f"📄 تعداد فایل‌ها: `{files_count}` عدد\n"
+        text += f"📁 مسیر: `{DOWNLOAD_PATH}`\n\n"
+        text += f"فایل‌های قدیمی‌تر از ۱ روز قابل پاکسازی هستند."
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🗑️ پاکسازی فایل‌های قدیمی", callback_data="admin_clean_storage"),
+            InlineKeyboardButton("📋 لیست فایل‌ها", callback_data="admin_list_files"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_clean_storage":
+        deleted_count, deleted_size = clean_storage(keep_days=1)
+        deleted_mb = deleted_size / (1024 * 1024)
+        add_admin_log("پاکسازی فضا", f"{deleted_count} فایل - {deleted_mb:.1f} MB")
+        
+        text = f"🗑️ **پاکسازی انجام شد!**\n\n"
+        text += f"✅ حذف شدند: `{deleted_count}` فایل\n"
+        text += f"✅ فضا آزاد شد: `{deleted_mb:.1f}` مگابایت"
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_storage"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_list_files":
+        files = []
+        for f in os.listdir(DOWNLOAD_PATH):
+            fp = os.path.join(DOWNLOAD_PATH, f)
+            if os.path.isfile(fp):
+                size_kb = os.path.getsize(fp) / 1024
+                mtime = datetime.fromtimestamp(os.path.getmtime(fp)).strftime("%Y-%m-%d %H:%M")
+                files.append(f"• `{f[:30]}` - {size_kb:.1f}KB - {mtime}")
+        
+        if files:
+            text = "📋 **لیست فایل‌های ذخیره شده:**\n\n" + "\n".join(files[-20:])
+            if len(files) > 20:
+                text += f"\n\n... و {len(files)-20} فایل دیگر"
+        else:
+            text = "📂 هیچ فایلی در پوشه دانلود وجود ندارد."
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_storage"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_logs":
+        text = f"📜 **لاگ‌های ادمین** (آخرین ۲۰ مورد)\n\n"
+        if admin_logs:
+            for log in admin_logs[:20]:
+                text += f"🕐 {log['time']}\n"
+                text += f"📌 {log['action']}\n"
+                text += f"📝 {log['details']}\n\n"
+        else:
+            text += "هیچ لاگی ثبت نشده است."
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🗑️ پاک کردن لاگ‌ها", callback_data="admin_clear_logs"),
+            InlineKeyboardButton("📋 ارسال لاگ کامل", callback_data="admin_export_logs"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_clear_logs":
+        admin_logs.clear()
+        add_admin_log("پاکسازی لاگ", "تاریخچه لاگ‌ها پاک شد")
+        bot.answer_callback_query(call.id, "لاگ‌ها پاک شدند!")
+        admin_panel(call.message)
+    
+    elif call.data == "admin_export_logs":
+        if admin_logs:
+            log_text = "📜 **گزارش کامل لاگ‌های ادمین**\n\n"
+            for log in admin_logs:
+                log_text += f"[{log['time']}] {log['action']}: {log['details']}\n"
+            
+            if len(log_text) > 4000:
+                log_text = log_text[:4000] + "\n\n... ادامه دارد"
+            bot.send_message(call.message.chat.id, log_text, parse_mode="Markdown")
+        else:
+            bot.answer_callback_query(call.id, "هیچ لاگی وجود ندارد!")
+    
+    elif call.data == "admin_users":
+        today = datetime.now().strftime("%Y%m%d")
+        active_users = [uid for uid, data in user_daily_usage.items() if data["date"] == today]
+        
+        text = f"👥 **مدیریت کاربران**\n\n"
+        text += f"📊 کاربران فعال امروز: `{len(active_users)}`\n"
+        text += f"👥 کل کاربران ثبت شده: `{len(user_daily_usage)}`\n\n"
+        text += f"برای ریست محدودیت یک کاربر خاص، از دکمه زیر استفاده کنید:"
+        
+        markup = InlineKeyboardMarkup(row_width=2)
+        markup.add(
+            InlineKeyboardButton("🔄 ریست محدودیت کاربر", callback_data="admin_reset_user"),
+            InlineKeyboardButton("📊 آمار کامل کاربران", callback_data="admin_user_stats"),
+            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_user_stats":
+        today = datetime.now().strftime("%Y%m%d")
+        user_list = []
+        for uid, data in user_daily_usage.items():
+            if data["date"] == today:
+                user_list.append(f"• `{uid}` → {data['count']} دانلود")
+        
+        if user_list:
+            text = "👥 **کاربران فعال امروز:**\n\n" + "\n".join(user_list[:30])
+            if len(user_list) > 30:
+                text += f"\n\n... و {len(user_list)-30} کاربر دیگر"
+        else:
+            text = "هیچ کاربر فعالی امروز وجود ندارد."
+        
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_users"))
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_reset_user":
+        msg = bot.send_message(call.message.chat.id, "لطفاً آیدی عددی کاربر را وارد کنید:")
+        bot.register_next_step_handler(msg, reset_user_limit_from_admin, call.message)
+    
+    elif call.data == "admin_restart":
+        text = "🔄 **آیا مطمئن هستید؟**\n\nریست کردن ربات باعث توقف موقت و راه‌اندازی مجدد می‌شود."
+        markup = InlineKeyboardMarkup()
+        markup.add(
+            InlineKeyboardButton("✅ بله، ریست کن", callback_data="admin_confirm_restart"),
+            InlineKeyboardButton("❌ نه، منصرف شدم", callback_data="admin_back")
+        )
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+    
+    elif call.data == "admin_confirm_restart":
+        bot.edit_message_text("🔄 **در حال ریست کردن ربات...**", call.message.chat.id, call.message.message_id)
+        add_admin_log("ریست ربات", "ربات توسط ادمین ریست شد")
+        time.sleep(2)
+        os._exit(0)
+    
+    elif call.data == "admin_back":
+        admin_panel(call.message)
+
+def set_daily_limit(message, original_message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        new_limit = int(message.text.strip())
+        if 1 <= new_limit <= 500:
+            global DAILY_LIMIT
+            DAILY_LIMIT = new_limit
+            add_admin_log("تغییر محدودیت", f"تنظیم به {DAILY_LIMIT}")
+            bot.send_message(message.chat.id, f"✅ محدودیت روزانه به `{DAILY_LIMIT}` تغییر یافت!", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, "❌ محدودیت باید بین 1 تا 500 باشد!")
+    except:
+        bot.send_message(message.chat.id, "❌ لطفاً یک عدد معتبر وارد کنید!")
+    
+    admin_panel(original_message)
+
+def reset_user_limit_from_admin(message, original_message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    
+    try:
+        user_id = int(message.text.strip())
+        if user_id in user_daily_usage:
+            old_count = user_daily_usage[user_id]["count"]
+            user_daily_usage[user_id]["count"] = 0
+            add_admin_log("ریست کاربر", f"کاربر {user_id} - {old_count} دانلود → 0")
+            bot.send_message(message.chat.id, f"✅ محدودیت کاربر `{user_id}` با موفقیت ریست شد.", parse_mode="Markdown")
+        else:
+            bot.send_message(message.chat.id, f"⚠️ کاربر `{user_id}` در لیست وجود ندارد.", parse_mode="Markdown")
+    except:
+        bot.send_message(message.chat.id, "❌ آیدی نامعتبر است!")
+    
+    admin_panel(original_message)
+
 @bot.callback_query_handler(func=lambda call: call.data == "check_membership")
 def check_membership_callback(call):
     user_id = call.from_user.id
@@ -667,12 +1088,13 @@ def check_membership_callback(call):
             parse_mode="Markdown"
         )
 
-# ================= دریافت لینک =================
+# ================= دریافت لینک با تشخیص خودکار =================
 @bot.message_handler(content_types=['text'])
 def handle(message):
     user_id = message.from_user.id
+    chat_id = message.chat.id
     
-    # بررسی عضویت در کانال
+    # بررسی عضویت
     if not is_member(user_id):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
@@ -686,6 +1108,11 @@ def handle(message):
             reply_markup=markup,
             parse_mode="Markdown"
         )
+        return
+    
+    # استخراج لینک
+    url = extract_url(message.text)
+    if not url:
         return
     
     # بررسی محدودیت روزانه
@@ -699,113 +1126,73 @@ def handle(message):
             f"از فردا دوباره می‌توانید استفاده کنید."
         )
         return
-
+    
+    # بررسی دانلود همزمان
     if user_id in active_downloads:
         bot.reply_to(message, "⏳ یک دانلود در حال انجام است... لطفاً صبر کنید.")
         return
-
-    url = extract_url(message.text)
-    if not url:
-        return
-
+    
+    # رفع لینک کوتاه
     resolved_url = resolve_short_url(url)
     if resolved_url != url:
-        bot.send_message(message.chat.id, "🔗 **لینک کوتاه تشخیص داده شد.**", parse_mode="Markdown")
+        bot.send_message(chat_id, "🔗 **لینک کوتاه تشخیص داده شد.**", parse_mode="Markdown")
         url = resolved_url
-
+    
+    # تشخیص پلتفرم
     platform = detect_platform(url)
     user_links[user_id] = url
     
-    media_type_hint = ""
-    if 'pinterest' in url or 'pin.it' in url:
-        media_type_hint = "\n🖼️ **این لینک ممکنه تصویر باشه**"
-    
-    bot.reply_to(
-        message, 
-        f"📥 **پلتفرم: {platform}**{media_type_hint}\n\n"
-        f"🎯 ۱۵ روش مختلف برای دانلود آماده است!\n"
-        f"📊 **تعداد دانلود باقی‌مانده امروز: {get_remaining_limit(user_id)}**\n\n"
-        f"لطفاً نوع دانلود رو انتخاب کن:", 
-        reply_markup=platform_keyboard(), 
+    # ========== تشخیص خودکار نوع محتوا ==========
+    status_msg = bot.reply_to(
+        message,
+        f"🔍 **در حال تشخیص خودکار محتوا...**\n\n"
+        f"📥 پلتفرم: {platform}\n"
+        f"🔄 لطفاً چند لحظه صبر کنید...",
         parse_mode="Markdown"
     )
-
-# ================= انتخاب نوع دانلود =================
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callback(call):
-    chat_id = call.message.chat.id
-    user_id = call.from_user.id
     
-    # بررسی عضویت در کال‌بک
-    if not is_member(user_id):
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
-        markup.add(InlineKeyboardButton("✅ عضویت پیدا کردم", callback_data="check_membership"))
-        
-        bot.answer_callback_query(call.id, "لطفاً ابتدا در کانال عضو شوید!", show_alert=True)
-        bot.edit_message_text(
-            f"🔒 **برای استفاده از ربات ابتدا باید در کانال ما عضو شوید!**\n\n"
-            f"📢 **کانال:** {CHANNEL_USERNAME}\n\n"
-            f"پس از عضویت، دکمه «عضویت پیدا کردم» را بزنید.",
-            chat_id,
-            call.message.message_id,
-            reply_markup=markup,
-            parse_mode="Markdown"
-        )
-        return
-
-    if call.data == "cancel":
-        bot.edit_message_text("❌ عملیات لغو شد.", chat_id, call.message.message_id)
-        return
-
-    if user_id in active_downloads:
-        bot.answer_callback_query(call.id, "⏳ صبر کن دانلود قبلی تموم شه!")
-        return
-
-    # بررسی مجدد محدودیت روزانه
-    if not check_daily_limit(user_id):
-        remaining = get_remaining_limit(user_id)
-        bot.answer_callback_query(call.id, "محدودیت روزانه شما به پایان رسیده!", show_alert=True)
-        bot.edit_message_text(
-            f"⚠️ **محدودیت روزانه شما به پایان رسیده است!**\n\n"
-            f"شما می‌توانید روزانه {DAILY_LIMIT} بار دانلود کنید.\n"
-            f"📊 **تعداد دانلود باقی‌مانده امروز: {remaining}**",
-            chat_id,
-            call.message.message_id
-        )
-        return
-
-    url = user_links.get(user_id)
-    if not url:
-        bot.answer_callback_query(call.id, "❌ خطا: لینک یافت نشد!")
-        return
-
+    media_type = auto_detect_media_type(url)
+    
+    # نقشه نوع محتوا به ایموجی و پیام
+    type_map = {
+        'video': ('🎥', 'ویدیو'),
+        'audio': ('🎵', 'صدا'),
+        'image': ('🖼️', 'تصویر')
+    }
+    emoji, type_name = type_map.get(media_type, ('🎬', 'رسانه'))
+    
     bot.edit_message_text(
-        "🔄 **در حال آماده‌سازی ۱۵ روش دانلود...**\n"
-        "⏳ این فرآیند چند لحظه طول می‌کشد",
+        f"{emoji} **نوع محتوا تشخیص داده شد: {type_name}**\n\n"
+        f"📥 پلتفرم: {platform}\n"
+        f"🎯 ۱۶ روش مختلف برای دانلود آماده است!\n"
+        f"📊 **تعداد دانلود باقی‌مانده امروز: {get_remaining_limit(user_id)}**\n\n"
+        f"🔄 در حال دانلود... لطفاً صبر کنید.",
         chat_id,
-        call.message.message_id,
+        status_msg.message_id,
         parse_mode="Markdown"
     )
-
-    def progress_callback(message):
-        try:
-            bot.edit_message_text(
-                message,
-                chat_id,
-                call.message.message_id,
-                parse_mode="Markdown"
-            )
-        except:
-            pass
-
+    
+    # شروع دانلود خودکار
     def process():
         try:
             with lock:
                 active_downloads[user_id] = time.time()
-
-            result = downloader.download(url, progress_callback)
-
+            
+            def progress_callback(msg):
+                try:
+                    bot.edit_message_text(
+                        msg,
+                        chat_id,
+                        status_msg.message_id,
+                        parse_mode="Markdown"
+                    )
+                except:
+                    pass
+            
+            # ارسال نوع رسانه به دانلودر برای بهینه‌سازی
+            result = downloader.download(url, progress_callback, media_type_hint=media_type)
+            add_admin_log("دانلود", f"کاربر {user_id} - {url[:50]}... - {'موفق' if result else 'ناموفق'} - نوع: {media_type}")
+            
             if result and os.path.exists(result['file']):
                 file_size = os.path.getsize(result['file'])
                 
@@ -813,15 +1200,14 @@ def handle_callback(call):
                     bot.send_message(chat_id, f"❌ حجم فایل بیشتر از {MAX_FILE_SIZE/1024/1024:.0f} مگابایت است!")
                     os.remove(result['file'])
                     return
-
+                
                 progress_callback(f"📤 **در حال آپلود...**\n📊 حجم: {file_size/1024/1024:.1f}MB")
-
-                # افزایش شمارش دانلود روزانه
+                
                 daily_count = increment_daily_usage(user_id)
                 remaining = DAILY_LIMIT - daily_count
-
+                
                 with open(result['file'], 'rb') as f:
-                    file_type = result.get('type', 'video')
+                    file_type = result.get('type', media_type)
                     
                     if file_type == 'image' or result['file'].lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.webp')):
                         bot.send_photo(
@@ -831,7 +1217,7 @@ def handle_callback(call):
                                    f"📥 روش: {result['method']}\n"
                                    f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
                                    f"📊 **تعداد دانلود باقی‌مانده امروز: {remaining}**\n"
-                                   f"🎯 ۱۵ روش مختلف امتحان شد",
+                                   f"🎯 ۱۶ روش مختلف امتحان شد",
                             timeout=300
                         )
                     elif file_type == 'audio' or result['file'].endswith('.mp3'):
@@ -842,7 +1228,7 @@ def handle_callback(call):
                                    f"📥 روش: {result['method']}\n"
                                    f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
                                    f"📊 **تعداد دانلود باقی‌مانده امروز: {remaining}**\n"
-                                   f"🎯 ۱۵ روش مختلف امتحان شد",
+                                   f"🎯 ۱۶ روش مختلف امتحان شد",
                             timeout=300
                         )
                     else:
@@ -853,162 +1239,46 @@ def handle_callback(call):
                                    f"📥 روش: {result['method']}\n"
                                    f"📊 حجم: {file_size/1024/1024:.1f}MB\n"
                                    f"📊 **تعداد دانلود باقی‌مانده امروز: {remaining}**\n"
-                                   f"🎯 ۱۵ روش مختلف امتحان شد",
+                                   f"🎯 ۱۶ روش مختلف امتحان شد",
                             timeout=300
                         )
-
+                
                 os.remove(result['file'])
-
+                
                 try:
                     bot.edit_message_text(
                         "✅ **دانلود با موفقیت انجام شد!**",
                         chat_id,
-                        call.message.message_id,
+                        status_msg.message_id,
                         parse_mode="Markdown"
                     )
                 except:
                     pass
-
+            
             else:
                 bot.send_message(
                     chat_id, 
                     "❌ **خطا در دانلود!**\n"
-                    "همه ۱۵ روش امتحان شدند اما موفق نبود.\n"
+                    "همه ۱۶ روش امتحان شدند اما موفق نبود.\n"
                     "مشکل ممکنه از این موارد باشه:\n"
                     "• فایل خصوصی یا حذف شده\n"
                     "• محدودیت شدید کپی‌رایت\n"
                     "• مشکل در سرور\n\n"
                     "لطفاً چند دقیقه بعد دوباره تلاش کنید."
                 )
-
+        
         except Exception as e:
+            logger.error(f"خطا در دانلود: {e}")
             bot.send_message(chat_id, f"❌ خطا:\n{str(e)[:200]}")
-
+        
         finally:
             with lock:
                 if user_id in active_downloads:
                     del active_downloads[user_id]
                 if user_id in user_links:
                     del user_links[user_id]
-
+    
     threading.Thread(target=process, daemon=True).start()
-
-# ================= پنل ادمین =================
-@bot.message_handler(commands=['admin'])
-def admin_panel(message):
-    if message.from_user.id != ADMIN_ID:
-        bot.reply_to(message, "⛔ دسترسی ندارید!")
-        return
-    
-    try:
-        result = subprocess.run(['yt-dlp', '--version'], capture_output=True, text=True)
-        version = result.stdout.strip() if result.returncode == 0 else "نامشخص"
-    except:
-        version = "نامشخص"
-    
-    # آمار کاربران
-    total_users = len(set(user_daily_usage.keys()))
-    
-    text = f"👑 **پنل مدیریت**\n\n"
-    text += f"✅ **۱۵ روش دانلود فعال**\n"
-    text += f"✅ **عضویت اجباری در کانال {CHANNEL_USERNAME}**\n"
-    text += f"✅ **محدودیت روزانه: {DAILY_LIMIT} دانلود**\n"
-    text += f"✅ **تشخیص خودکار محتوا**\n"
-    text += f"📊 دانلودهای هم‌زمان: {len(active_downloads)}\n"
-    text += f"👥 تعداد کاربران فعال: {total_users}\n"
-    text += f"📦 yt-dlp نسخه: {version}\n"
-    text += f"💾 حجم مجاز: ۵۰۰ مگابایت\n\n"
-    text += f"**آمار امروز:**\n"
-    
-    # نمایش آمار امروز
-    today = datetime.now().strftime("%Y%m%d")
-    today_users = sum(1 for u in user_daily_usage.values() if u["date"] == today)
-    today_downloads = sum(u["count"] for u in user_daily_usage.values() if u["date"] == today)
-    text += f"📊 کاربران امروز: {today_users}\n"
-    text += f"📥 دانلودهای امروز: {today_downloads}"
-    
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("📊 آمار دقیق", callback_data="admin_stats"),
-        InlineKeyboardButton("🎯 وضعیت ربات", callback_data="admin_status"),
-        InlineKeyboardButton("🔄 ریست محدودیت کاربر", callback_data="admin_reset")
-    )
-    
-    bot.send_message(message.chat.id, text, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
-def admin_callback(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید!")
-        return
-    
-    if call.data == "admin_stats":
-        today = datetime.now().strftime("%Y%m%d")
-        today_users = sum(1 for u in user_daily_usage.values() if u["date"] == today)
-        today_downloads = sum(u["count"] for u in user_daily_usage.values() if u["date"] == today)
-        
-        top_users = sorted(user_daily_usage.items(), key=lambda x: x[1]["count"], reverse=True)[:5]
-        top_text = ""
-        for i, (uid, data) in enumerate(top_users, 1):
-            if data["date"] == today:
-                top_text += f"{i}. `{uid}` → {data['count']} دانلود\n"
-        
-        text = f"📊 **آمار دقیق ربات**\n\n"
-        text += f"📅 تاریخ: {datetime.now().strftime('%Y/%m/%d')}\n"
-        text += f"👥 کاربران امروز: {today_users}\n"
-        text += f"📥 دانلودهای امروز: {today_downloads}\n"
-        text += f"📊 میانگین دانلود هر کاربر: {today_downloads/today_users if today_users > 0 else 0:.1f}\n\n"
-        text += f"🏆 **۵ کاربر برتر امروز:**\n{top_text if top_text else 'هیچ کاربری'}"
-        
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    
-    elif call.data == "admin_status":
-        text = f"🎯 **وضعیت ربات**\n\n"
-        text += f"✅ ربات فعال است\n"
-        text += f"✅ عضویت اجباری: {CHANNEL_USERNAME}\n"
-        text += f"✅ محدودیت روزانه: {DAILY_LIMIT}\n"
-        text += f"✅ ۱۵ روش دانلود فعال\n"
-        text += f"✅ تشخیص خودکار تصاویر\n"
-        text += f"📊 دانلودهای همزمان: {len(active_downloads)}"
-        
-        bot.answer_callback_query(call.id)
-        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, parse_mode="Markdown")
-    
-    elif call.data == "admin_reset":
-        markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(
-            InlineKeyboardButton("📝 وارد کردن آیدی کاربر", callback_data="admin_reset_user"),
-            InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
-        )
-        bot.edit_message_text(
-            "🔄 **ریست محدودیت کاربر**\n\n"
-            "لطفاً روش را انتخاب کنید:",
-            call.message.chat.id,
-            call.message.message_id,
-            reply_markup=markup
-        )
-    
-    elif call.data == "admin_reset_user":
-        msg = bot.send_message(call.message.chat.id, "لطفاً آیدی عددی کاربر را وارد کنید:")
-        bot.register_next_step_handler(msg, reset_user_limit)
-    
-    elif call.data == "admin_back":
-        admin_panel(call.message)
-
-def reset_user_limit(message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    
-    try:
-        user_id = int(message.text.strip())
-        if user_id in user_daily_usage:
-            user_daily_usage[user_id]["count"] = 0
-            bot.send_message(message.chat.id, f"✅ محدودیت کاربر `{user_id}` با موفقیت ریست شد.", parse_mode="Markdown")
-        else:
-            bot.send_message(message.chat.id, f"⚠️ کاربر `{user_id}` در لیست وجود ندارد.", parse_mode="Markdown")
-    except:
-        bot.send_message(message.chat.id, "❌ آیدی نامعتبر است!")
 
 # ================= وب هوک =================
 @app.route("/webhook", methods=["POST"])
@@ -1020,18 +1290,18 @@ def webhook():
 
 @app.route("/")
 def home():
-    return "ربات دانلود جهانی - عضویت اجباری + محدودیت روزانه + ۱۵ روش"
+    return "ربات دانلود جهانی - تشخیص خودکار محتوا - پشتیبانی از گروه"
 
 if __name__ == "__main__":
     print("="*70)
-    print("🎬 ربات دانلود جهانی - نسخه التیمیت")
+    print("🎬 ربات دانلود جهانی - نسخه التیمیت ۲۰۲۶")
     print("="*70)
-    print("✅ ۱۵ روش مختلف دانلود")
+    print("✅ ۱۶ روش مختلف دانلود")
+    print("✅ تشخیص خودکار فیلم، صدا یا تصویر (بدون نیاز به کلیک)")
+    print("✅ پشتیبانی کامل از گروه‌ها و کانال‌ها")
     print("✅ عضویت اجباری در کانال")
-    print("✅ محدودیت روزانه ۲۰ دانلود")
-    print("✅ تشخیص خودکار محتوا")
+    print("✅ محدودیت روزانه قابل تنظیم")
     print("✅ پنل ادمین کامل")
-    print("✅ پشتیبانی از تمام سایت‌ها")
     print("="*70)
     
     bot.remove_webhook()
@@ -1040,6 +1310,9 @@ if __name__ == "__main__":
     
     print(f"✅ Webhook: {WEBHOOK_URL}")
     print("✅ ربات با موفقیت راه‌اندازی شد!")
+    print("="*70)
+    print("📌 ویژگی جدید: تشخیص خودکار نوع محتوا - فقط لینک رو بفرست!")
+    print("📌 برای ورود به پنل ادمین، دستور /admin را بفرستید")
     print("="*70)
     
     app.run(host="0.0.0.0", port=PORT)
