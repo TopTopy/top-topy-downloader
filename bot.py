@@ -1,10 +1,4 @@
 # -*- coding: utf-8 -*-
-"""
-GOD MODE CORE ENGINE v3.0
-پشتیبانی کامل از: YouTube, Instagram, TikTok, Pinterest, Twitter/X, Facebook, Reddit, Vimeo, SoundCloud, Spotify, Twitch, آپارات, تلوبیون, فیلیمو, نماشا
-با 5 لایه Fallback + Retry هوشمند + کش پیشرفته
-"""
-
 import os
 import re
 import time
@@ -12,8 +6,6 @@ import threading
 import random
 import hashlib
 import shutil
-import subprocess
-import json
 from collections import deque
 from queue import Queue, Empty
 from flask import Flask, jsonify
@@ -22,7 +14,7 @@ import yt_dlp
 import requests
 from urllib.parse import urlparse
 
-# ================= تنظیمات اصلی =================
+# ================= تنظیمات مستقیم =================
 TOKEN = "8629099905:AAHYL2VGTqTIVCscKd7QJNAvY0gEbVEEeg4"
 ADMIN_ID = 8226091292
 MAX_FILE_SIZE = 100 * 1024 * 1024
@@ -33,7 +25,6 @@ PORT = 8080
 MAX_WORKERS = 3
 MAX_QUEUE_SIZE = 30
 MAX_DOWNLOADS_PER_MINUTE = 5
-MAX_RETRIES = 3
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 os.makedirs(CACHE_PATH, exist_ok=True)
@@ -51,13 +42,12 @@ active_lock = threading.Lock()
 user_rate_limit = {}
 rate_lock = threading.Lock()
 
-# ================= User-Agent های متنوع =================
+# ================= User-Agent =================
 USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0",
+    "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0",
     "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-    "Mozilla/5.0 (Linux; Android 14; SM-S918B) AppleWebKit/537.36 Chrome/120.0.0.0",
 ]
 
 def get_ua():
@@ -66,13 +56,13 @@ def get_ua():
 # ================= بررسی FFmpeg =================
 def check_ffmpeg():
     try:
+        import subprocess
         subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5)
         return True
     except:
         return False
 
 FFMPEG_OK = check_ffmpeg()
-print(f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
 
 # ================= کش فایل =================
 def get_cache_key(url):
@@ -80,10 +70,9 @@ def get_cache_key(url):
 
 def get_cached_file(url):
     key = get_cache_key(url)
-    for ext in ['.mp4', '.mp3', '.jpg', '.png', '.gif', '.webm', '.mkv']:
+    for ext in ['.mp4', '.mp3', '.jpg', '.png', '.gif', '.webm']:
         path = os.path.join(CACHE_PATH, f"{key}{ext}")
         if os.path.exists(path):
-            os.utime(path, None)
             return path
     return None
 
@@ -98,12 +87,11 @@ def cache_file(file_path, url):
             except:
                 pass
 
-# ================= لایه 1: yt-dlp با Retry (اصلی) =================
+# ================= لایه 1: yt-dlp با Retry و کلاینت‌های مختلف =================
 def safe_ytdlp(url, is_audio=False, progress_callback=None):
-    """yt-dlp با 3 بار تلاش مجدد و کلاینت‌های مختلف"""
     clients = ['android', 'ios', 'web', 'android_embedded']
     
-    for attempt in range(MAX_RETRIES):
+    for attempt in range(3):
         for client in clients:
             try:
                 unique = f"{int(time.time()*1000)}{random.randint(100,999)}"
@@ -155,12 +143,10 @@ def safe_ytdlp(url, is_audio=False, progress_callback=None):
                         filename = os.path.splitext(filename)[0] + '.mp3'
                     if os.path.exists(filename) and os.path.getsize(filename) > 10240:
                         return filename
-                        
-            except Exception as e:
-                print(f"[YT-DLP {client} Attempt {attempt+1}] {e}")
+            except:
                 continue
         
-        if attempt < MAX_RETRIES - 1:
+        if attempt < 2:
             time.sleep(2)
     
     return None
@@ -184,14 +170,13 @@ def download_image_direct(url):
                         f.write(chunk)
             if os.path.getsize(filename) > 1024:
                 return filename
-    except Exception as e:
-        print(f"Image direct error: {e}")
+    except:
+        pass
     return None
 
 # ================= لایه 3: دانلود پینترست =================
-def download_pinterest_direct(url):
+def download_pinterest(url):
     try:
-        # روش 1: استخراج مستقیم تصویر
         pin_match = re.search(r'/pin/(\d+)', url)
         if not pin_match:
             r = requests.get(url, allow_redirects=True, timeout=10)
@@ -217,10 +202,8 @@ def download_pinterest_direct(url):
                                         if chunk:
                                             f.write(chunk)
                                 return filename
-    except Exception as e:
-        print(f"Pinterest error: {e}")
-    
-    # روش 2: yt-dlp
+    except:
+        pass
     return safe_ytdlp(url, False, None)
 
 # ================= لایه 4: دانلود آپارات =================
@@ -251,8 +234,8 @@ def download_aparat(url):
                                 if chunk:
                                     f.write(chunk)
                         return filename
-    except Exception as e:
-        print(f"Aparat error: {e}")
+    except:
+        pass
     return safe_ytdlp(url, False, None)
 
 # ================= لایه 5: دانلود تلوبیون =================
@@ -276,8 +259,8 @@ def download_telewebion(url):
                                 if chunk:
                                     f.write(chunk)
                         return filename
-    except Exception as e:
-        print(f"Telewebion error: {e}")
+    except:
+        pass
     return safe_ytdlp(url, False, None)
 
 # ================= لایه 6: دانلود فیلیمو =================
@@ -291,29 +274,24 @@ def download_namasha(url):
 # ================= رفع لینک کوتاه =================
 def resolve_short_url(url):
     try:
-        session = requests.Session()
-        session.headers.update({'User-Agent': get_ua()})
-        resp = session.get(url, allow_redirects=True, timeout=15)
-        session.close()
-        return resp.url
-    except Exception as e:
-        print(f"Short URL resolve error: {e}")
+        r = requests.get(url, allow_redirects=True, timeout=10)
+        return r.url
+    except:
         return url
 
 # ================= موتور اصلی دانلود با Fallback زنجیره‌ای =================
 def download_media(url, is_audio=False, progress_callback=None):
-    # 1. بررسی کش
+    # بررسی کش
     cached = get_cached_file(url)
     if cached:
         return cached
     
-    # 2. رفع لینک کوتاه
+    # رفع لینک کوتاه
     url = resolve_short_url(url)
     u = url.lower()
     
     result = None
     
-    # 3. تشخیص نوع محتوا و انتخاب روش مناسب
     # عکس مستقیم
     if any(ext in u for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
         result = download_image_direct(url)
@@ -336,7 +314,7 @@ def download_media(url, is_audio=False, progress_callback=None):
             return result
     
     # فیلیمو
-    if 'filimo.com' in u or 'filimo.ir' in u:
+    if 'filimo.com' in u:
         result = download_filimo(url)
         if result:
             cache_file(result, url)
@@ -351,12 +329,12 @@ def download_media(url, is_audio=False, progress_callback=None):
     
     # پینترست
     if 'pinterest.com' in u or 'pin.it' in u:
-        result = download_pinterest_direct(url)
+        result = download_pinterest(url)
         if result:
             cache_file(result, url)
             return result
     
-    # سایر پلتفرم‌ها با yt-dlp (شامل اینستاگرام، تیک‌تاک، توییتر، فیسبوک، ردیت، ویمئو، ساوندکلاود، اسپاتیفای، تویچ، یوتیوب)
+    # یوتیوب، اینستاگرام، تیک‌تاک، توییتر، فیسبوک، ردیت، ویمئو، ساوندکلاود، اسپاتیفای، تویچ
     result = safe_ytdlp(url, is_audio, progress_callback)
     if result:
         cache_file(result, url)
@@ -386,9 +364,9 @@ def detect_platform(url):
         return 'پینترست'
     if 'twitter.com' in u or 'x.com' in u:
         return 'توییتر'
-    if 'facebook.com' in u or 'fb.com' in u:
+    if 'facebook.com' in u:
         return 'فیسبوک'
-    if 'reddit.com' in u or 'redd.it' in u:
+    if 'reddit.com' in u:
         return 'ردیت'
     if 'vimeo.com' in u:
         return 'ویمئو'
@@ -412,7 +390,7 @@ def detect_content_type(url):
     u = url.lower()
     if any(ext in u for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
         return 'image', 'عکس', '🖼️'
-    if any(ext in u for ext in ['.mp3', '.wav', '.ogg', '.m4a', '.flac']):
+    if any(ext in u for ext in ['.mp3', '.wav', '.ogg', '.m4a']):
         return 'audio', 'آهنگ', '🎵'
     return 'video', 'ویدیو', '🎬'
 
@@ -438,8 +416,7 @@ def safe_send(chat_id, file_path, caption):
             except:
                 f.seek(0)
                 return bot.send_document(chat_id, f, caption=caption, timeout=180)
-    except Exception as e:
-        print(f"Send error: {e}")
+    except:
         return None
 
 def safe_edit(text, chat_id, msg_id):
@@ -475,7 +452,7 @@ def process_download(user_id, chat_id, url, is_audio, msg_id):
             safe_send(chat_id, file_path, caption)
             safe_edit("✅ انجام شد!", chat_id, msg_id)
         else:
-            bot.send_message(chat_id, "❌ خطا در دانلود!\nلطفاً چند دقیقه دیگر تلاش کنید.")
+            bot.send_message(chat_id, "❌ خطا در دانلود!")
     except Exception as e:
         bot.send_message(chat_id, f"❌ خطا: {str(e)[:100]}")
     finally:
@@ -496,8 +473,8 @@ def queue_worker():
                 download_queue.task_done()
         except Empty:
             continue
-        except Exception as e:
-            print(f"Worker error: {e}")
+        except:
+            pass
 
 for _ in range(MAX_WORKERS):
     threading.Thread(target=queue_worker, daemon=True).start()
@@ -507,15 +484,14 @@ for _ in range(MAX_WORKERS):
 def start_cmd(message):
     ff_status = "✅" if FFMPEG_OK else "❌"
     welcome = (
-        "💣 **GOD MODE CORE ENGINE v3.0**\n\n"
-        "✅ **پشتیبانی از 20+ پلتفرم:**\n"
+        "💣 **GOD MODE BOT**\n\n"
+        "✅ پشتیبانی از 20+ پلتفرم:\n"
         "   ├ یوتیوب | اینستاگرام | تیک‌تاک\n"
         "   ├ پینترست | توییتر | فیسبوک\n"
         "   ├ ردیت | ویمئو | ساوندکلاود\n"
         "   ├ اسپاتیفای | تویچ | آپارات\n"
         "   └ تلوبیون | فیلیمو | نماشا\n\n"
         "✅ تشخیص خودکار فیلم / آهنگ / عکس\n"
-        "✅ 5 لایه Fallback + Retry هوشمند\n"
         f"🔧 FFmpeg: {ff_status}\n"
         f"📥 حداکثر حجم: {MAX_FILE_SIZE//(1024*1024)}MB\n\n"
         "📌 لینک را بفرستید..."
@@ -538,8 +514,7 @@ def admin_cmd(message):
         f"📥 کل دانلودها: {stats['total']}\n"
         f"⚡ فعال: {active}\n"
         f"📋 صف: {queue_size}\n"
-        f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}\n"
-        f"💾 کش: {len(os.listdir(CACHE_PATH))} فایل"
+        f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}"
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
@@ -590,11 +565,11 @@ def handle_msg(message):
     
     allowed, rem = check_rate_limit(uid)
     if not allowed:
-        bot.reply_to(message, f"🛡️ محدودیت سرعت!\n{rem} ثانیه دیگر صبر کنید.")
+        bot.reply_to(message, f"🛡️ {rem} ثانیه صبر کنید.")
         return
     
     if download_queue.qsize() >= MAX_QUEUE_SIZE:
-        bot.reply_to(message, "⚠️ صف دانلود پر است! لطفاً چند دقیقه دیگر تلاش کنید.")
+        bot.reply_to(message, "⚠️ صف دانلود پر است!")
         return
     
     url = extract_url(message.text)
@@ -616,43 +591,38 @@ def handle_msg(message):
     with active_lock:
         active_downloads[uid] = time.time()
     
-    safe_edit(f"🔄 در حال دانلود {cname}...", message.chat.id, msg.message_id)
+    safe_edit(f"🔄 دانلود {cname}...", message.chat.id, msg.message_id)
     
     try:
         download_queue.put((uid, message.chat.id, url, is_audio, msg.message_id), timeout=5)
     except:
         with active_lock:
             active_downloads.pop(uid, None)
-        safe_edit("⚠️ خطا در صف!", message.chat.id, msg.message_id)
+        safe_edit("⚠️ خطا!", message.chat.id, msg.message_id)
 
 # ================= سلامت سرویس =================
 @app.route("/", methods=["GET"])
 def home():
-    return "💣 GOD MODE CORE ENGINE v3.0 ACTIVE", 200
+    return "💣 GOD MODE BOT ACTIVE", 200
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status": "healthy",
+        "status": "ok",
         "active": len(active_downloads),
         "queue": download_queue.qsize(),
-        "total": stats['total'],
-        "ffmpeg": FFMPEG_OK
+        "total": stats['total']
     })
 
 # ================= اجرا =================
 if __name__ == "__main__":
-    print("="*60)
-    print("💣 GOD MODE CORE ENGINE v3.0")
-    print(f"✅ FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
-    print(f"✅ Workers: {MAX_WORKERS}")
-    print(f"✅ صف: {MAX_QUEUE_SIZE}")
-    print(f"✅ حجم مجاز: {MAX_FILE_SIZE//(1024*1024)}MB")
-    print("="*60)
+    print("="*50)
+    print("💣 GOD MODE BOT")
+    print(f"FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
+    print("="*50)
     
     try:
         bot.remove_webhook()
-        print("✅ Webhook removed")
     except:
         pass
     
@@ -660,8 +630,7 @@ if __name__ == "__main__":
         while True:
             try:
                 bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
-            except Exception as e:
-                print(f"Polling error: {e}")
+            except:
                 time.sleep(10)
     
     threading.Thread(target=run_polling, daemon=True).start()
