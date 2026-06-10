@@ -1,5 +1,11 @@
 [phases.setup]
-nixPkgs = ["python311", "ffmpeg", "pip"]
+nixPkgs = ["ffmpeg", "yt-dlp", "deno", "nodejs"]
 
 [phases.install]
-cmds = ["pip install -r requirements.txt"]
+cmds = [
+    "pip install -U yt-dlp",
+    "yt-dlp -U || true"
+]
+
+[start]
+cmd = "python bot.py"
