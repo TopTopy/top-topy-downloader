@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 GOD MODE Downloader Bot - نسخه نهایی
-بدون نیاز به عضویت اجباری
+حالت Polling - بدون نیاز به Webhook
 """
 
 import os
@@ -13,9 +13,8 @@ import hashlib
 import shutil
 from collections import deque
 from queue import Queue, Empty
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
 import requests
 
@@ -67,6 +66,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/120.0.0.0",
     "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
 ]
 
 def get_ua():
@@ -92,6 +92,7 @@ def get_cached_file(url, quality):
     for ext in ['.mp4', '.mp3', '.jpg', '.png', '.gif', '.webm', '.mkv']:
         path = os.path.join(CACHE_PATH, f"{key}{ext}")
         if os.path.exists(path):
+            os.utime(path, None)
             return path
     return None
 
@@ -106,7 +107,7 @@ def cache_file(file_path, url, quality):
             except:
                 pass
 
-# ================= دانلودر اصلی =================
+# ================= دانلودر اصلی با yt-dlp =================
 def download_with_ytdlp(url, is_audio=False, progress_callback=None):
     unique = f"{int(time.time()*1000)}{random.randint(100,999)}"
     
@@ -130,6 +131,7 @@ def download_with_ytdlp(url, is_audio=False, progress_callback=None):
         'extractor_args': {
             'youtube': {'player_client': ['android', 'ios', 'web']},
             'instagram': {'video': ['yes']},
+            'tiktok': {'video': ['yes']},
         },
     }
     
@@ -140,19 +142,11 @@ def download_with_ytdlp(url, is_audio=False, progress_callback=None):
             'preferredquality': '192',
         }]
     
-    last_pct = 0
     if progress_callback:
         def hook(d):
-            nonlocal last_pct
             if d['status'] == 'downloading':
                 pct = d.get('_percent_str', '0%').replace('%', '').strip()
-                try:
-                    p = float(pct)
-                    if p - last_pct >= 10 or p == 100:
-                        last_pct = p
-                        progress_callback(f"⬇️ {p:.0f}%")
-                except:
-                    pass
+                progress_callback(f"⬇️ {pct}%")
             elif d['status'] == 'finished':
                 progress_callback("✅ نهایی‌سازی...")
         ydl_opts['progress_hooks'] = [hook]
@@ -213,8 +207,11 @@ def download_pinterest_direct(url):
     try:
         pin_match = re.search(r'/pin/(\d+)', url)
         if not pin_match:
-            r = requests.get(url, allow_redirects=True, timeout=10)
-            pin_match = re.search(r'/pin/(\d+)', r.url)
+            try:
+                r = requests.get(url, allow_redirects=True, timeout=10)
+                pin_match = re.search(r'/pin/(\d+)', r.url)
+            except:
+                pass
         if pin_match:
             pin_id = pin_match.group(1)
             api_url = f"https://api.pinterest.com/v3/pidgets/pins/info/?pin_ids={pin_id}"
@@ -240,6 +237,27 @@ def download_pinterest_direct(url):
         print(f"Pinterest error: {e}")
     return None
 
+# ================= دانلود مستقیم تیک‌تاک =================
+def download_tiktok_direct(url):
+    try:
+        unique = f"{int(time.time()*1000)}"
+        output = os.path.join(DOWNLOAD_PATH, f"tt_{unique}.%(ext)s")
+        ydl_opts = {
+            'format': 'best',
+            'outtmpl': output,
+            'quiet': True,
+            'no_warnings': True,
+            'user_agent': get_ua(),
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            filename = ydl.prepare_filename(info)
+            if os.path.exists(filename) and os.path.getsize(filename) > 10240:
+                return filename
+    except Exception as e:
+        print(f"TikTok error: {e}")
+    return None
+
 # ================= تابع اصلی دانلود =================
 def download_media(url, is_audio=False, progress_callback=None):
     # بررسی کش
@@ -250,16 +268,17 @@ def download_media(url, is_audio=False, progress_callback=None):
     url_lower = url.lower()
     
     # عکس مستقیم
-    if any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+    if any(ext in url_lower for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
         try:
             unique = f"{int(time.time()*1000)}"
             ext = '.jpg'
-            for e in ['.jpg', '.jpeg', '.png', '.gif']:
+            for e in ['.jpg', '.jpeg', '.png', '.gif', '.webp']:
                 if e in url_lower:
                     ext = e
                     break
             filename = os.path.join(DOWNLOAD_PATH, f"img_{unique}{ext}")
-            r = requests.get(url, headers={'User-Agent': get_ua()}, stream=True, timeout=30)
+            headers = {'User-Agent': get_ua()}
+            r = requests.get(url, headers=headers, stream=True, timeout=30)
             if r.status_code == 200 and 'image' in r.headers.get('content-type', ''):
                 with open(filename, 'wb') as f:
                     for chunk in r.iter_content(8192):
@@ -281,6 +300,13 @@ def download_media(url, is_audio=False, progress_callback=None):
     # پینترست
     if 'pinterest.com' in url_lower or 'pin.it' in url_lower:
         result = download_pinterest_direct(url)
+        if result:
+            cache_file(result, url, '720')
+            return result
+    
+    # تیک‌تاک
+    if 'tiktok.com' in url_lower or 'vt.tiktok.com' in url_lower:
+        result = download_tiktok_direct(url)
         if result:
             cache_file(result, url, '720')
             return result
@@ -324,9 +350,9 @@ def detect_platform(url):
 
 def detect_content_type(url):
     u = url.lower()
-    if any(ext in u for ext in ['.jpg', '.jpeg', '.png', '.gif']):
+    if any(ext in u for ext in ['.jpg', '.jpeg', '.png', '.gif', '.webp']):
         return 'image', 'عکس', '🖼️'
-    if any(ext in u for ext in ['.mp3', '.wav', '.ogg']):
+    if any(ext in u for ext in ['.mp3', '.wav', '.ogg', '.m4a']):
         return 'audio', 'آهنگ', '🎵'
     return 'video', 'ویدیو', '🎬'
 
@@ -339,18 +365,19 @@ def check_rate_limit(user_id):
         while q and q[0] < now - 60:
             q.popleft()
         if len(q) >= MAX_DOWNLOADS_PER_MINUTE:
-            return False, 60 - int(now - q[0])
+            remaining = 60 - int(now - q[0])
+            return False, remaining
         q.append(now)
-        return True, None
+        return True, 0
 
 def safe_send(chat_id, file_path, caption):
     try:
         with open(file_path, 'rb') as f:
             try:
-                return bot.send_video(chat_id, f, caption=caption, timeout=120)
+                return bot.send_video(chat_id, f, caption=caption, timeout=180)
             except:
                 f.seek(0)
-                return bot.send_document(chat_id, f, caption=caption, timeout=120)
+                return bot.send_document(chat_id, f, caption=caption, timeout=180)
     except Exception as e:
         print(f"Send error: {e}")
         return None
@@ -421,7 +448,11 @@ def start_cmd(message):
     ff_status = "✅" if FFMPEG_OK else "❌"
     welcome = (
         "💣 **GOD MODE BOT**\n\n"
-        "✅ پشتیبانی از یوتیوب | اینستاگرام | تیک‌تاک | پینترست\n"
+        "✅ پشتیبانی از:\n"
+        "   ├ یوتیوب | اینستاگرام\n"
+        "   ├ تیک‌تاک | پینترست\n"
+        "   └ و سایر سایت‌ها\n\n"
+        "✅ تشخیص خودکار فیلم / آهنگ / عکس\n"
         "✅ معماری پیشرفته Queue + Worker\n"
         f"🔧 FFmpeg: {ff_status}\n"
         f"📥 حداکثر حجم: {MAX_FILE_SIZE//(1024*1024)}MB\n\n"
@@ -443,9 +474,10 @@ def admin_cmd(message):
         "👑 **پنل مدیریت**\n\n"
         f"👤 کاربران: {len(stats['users'])}\n"
         f"📥 کل دانلودها: {stats['total']}\n"
-        f"⚡ فعال: {active}\n"
-        f"📋 صف: {queue_size}\n"
-        f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}"
+        f"⚡ دانلود فعال: {active}\n"
+        f"📋 صف انتظار: {queue_size}/{MAX_QUEUE_SIZE}\n"
+        f"🎬 FFmpeg: {'✅' if FFMPEG_OK else '❌'}\n"
+        f"💾 کش: {len(os.listdir(CACHE_PATH))} فایل"
     )
     bot.reply_to(message, text, parse_mode="Markdown")
 
@@ -455,7 +487,8 @@ def stats_cmd(message):
         return
     with active_lock:
         active = len(active_downloads)
-    bot.reply_to(message, f"📊 آمار\nفعال: {active}\nکل: {stats['total']}")
+    queue_size = download_queue.qsize()
+    bot.reply_to(message, f"📊 **آمار ربات**\n\nفعال: {active}\nصف: {queue_size}\nکل دانلودها: {stats['total']}\nکاربران: {len(stats['users'])}", parse_mode="Markdown")
 
 @bot.message_handler(commands=['clean'])
 def clean_cmd(message):
@@ -476,27 +509,36 @@ def clean_cmd(message):
             pass
     bot.reply_to(message, f"✅ {d} فایل پاک شد!")
 
+@bot.message_handler(commands=['queue'])
+def queue_cmd(message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    queue_size = download_queue.qsize()
+    with active_lock:
+        active = len(active_downloads)
+    bot.reply_to(message, f"📋 **وضعیت صف**\n\nدر حال دانلود: {active}\nدر انتظار: {queue_size}")
+
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_msg(message):
     uid = message.from_user.id
     
     with active_lock:
         if uid in active_downloads:
-            bot.reply_to(message, "⏳ در حال دانلود...")
+            bot.reply_to(message, "⏳ در حال دانلود... لطفاً صبر کنید.")
             return
     
     allowed, rem = check_rate_limit(uid)
     if not allowed:
-        bot.reply_to(message, f"🛡️ {rem} ثانیه صبر کنید.")
+        bot.reply_to(message, f"🛡️ **محدودیت سرعت!**\n{rem} ثانیه دیگر صبر کنید.", parse_mode="Markdown")
         return
     
     if download_queue.qsize() >= MAX_QUEUE_SIZE:
-        bot.reply_to(message, "⚠️ صف پر است!")
+        bot.reply_to(message, "⚠️ **صف دانلود پر است!**\nلطفاً چند دقیقه دیگر تلاش کنید.", parse_mode="Markdown")
         return
     
     url = extract_url(message.text)
     if not url:
-        bot.reply_to(message, "❌ لینک نامعتبر!")
+        bot.reply_to(message, "❌ لینک نامعتبر! لطفاً یک لینک معتبر بفرستید.")
         return
     
     url = resolve_short_url(url)
@@ -513,59 +555,63 @@ def handle_msg(message):
     with active_lock:
         active_downloads[uid] = time.time()
     
-    safe_edit(f"🔄 دانلود {cname}...", message.chat.id, msg.message_id)
+    safe_edit(f"🔄 در حال دانلود {cname}...", message.chat.id, msg.message_id)
     
     try:
         download_queue.put((uid, message.chat.id, url, is_audio, msg.message_id), timeout=5)
     except:
         with active_lock:
             active_downloads.pop(uid, None)
-        safe_edit("⚠️ خطا!", message.chat.id, msg.message_id)
+        safe_edit("⚠️ خطا در صف!", message.chat.id, msg.message_id)
 
-# ================= وب‌هوک و اجرا =================
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    try:
-        data = request.get_data().decode("utf-8")
-        update = telebot.types.Update.de_json(data)
-        bot.process_new_updates([update])
-        return "OK", 200
-    except:
-        return "OK", 200
-
+# ================= سلامت سرویس =================
 @app.route("/", methods=["GET"])
 def home():
-    return "💣 GOD MODE BOT ACTIVE", 200
+    return "💣 GOD MODE BOT ACTIVE - Polling Mode", 200
 
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({
-        "status": "ok",
-        "active": len(active_downloads),
-        "queue": download_queue.qsize(),
-        "total": stats['total']
+        "status": "healthy",
+        "active_downloads": len(active_downloads),
+        "queue_size": download_queue.qsize(),
+        "total_downloads": stats['total'],
+        "users": len(stats['users']),
+        "ffmpeg": FFMPEG_OK
     })
 
+# ================= اجرا با Polling =================
 def run_polling():
     while True:
         try:
+            print("✅ ربات در حال اجرا است...")
             bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
         except Exception as e:
             print(f"Polling error: {e}")
             time.sleep(10)
 
 if __name__ == "__main__":
-    print("="*50)
+    print("="*60)
     print("💣 GOD MODE BOT - نسخه نهایی")
+    print(f"✅ توکن: {TOKEN[:10]}...")
+    print(f"✅ ادمین: {ADMIN_ID}")
     print(f"✅ FFmpeg: {'✅' if FFMPEG_OK else '❌'}")
     print(f"✅ Workers: {MAX_WORKERS}")
-    print("="*50)
+    print(f"✅ صف: {MAX_QUEUE_SIZE}")
+    print(f"✅ حجم مجاز: {MAX_FILE_SIZE//(1024*1024)}MB")
+    print("="*60)
     
+    # حذف webhook
     try:
         bot.remove_webhook()
         print("✅ Webhook removed")
-    except:
-        pass
+    except Exception as e:
+        print(f"Webhook removal: {e}")
     
-    threading.Thread(target=run_polling, daemon=True).start()
+    # استارت Polling در ترد جداگانه
+    polling_thread = threading.Thread(target=run_polling, daemon=True)
+    polling_thread.start()
+    
+    # استارت Flask برای Health Check
+    print("✅ Flask server for health checks running on port", PORT)
     app.run(host="0.0.0.0", port=PORT, threaded=True, use_reloader=False)
