@@ -28,7 +28,6 @@ LOGS_PATH = "logs"
 WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
-# محدودیت پیش‌فرض
 DAILY_LIMIT = 20
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -77,7 +76,6 @@ def check_ffmpeg():
 HAS_FFMPEG = check_ffmpeg()
 logger.info(f"FFmpeg available: {HAS_FFMPEG}")
 
-# ================= توابع کمکی =================
 def add_admin_log(action, details):
     log_entry = {
         "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -237,10 +235,7 @@ def download_image_direct(url):
         logger.error(f"خطا در دانلود تصویر: {e}")
         return None
 
-# ================= تشخیص خودکار نوع رسانه =================
 def auto_detect_media_type(url):
-    """تشخیص خودکار اینکه لینک برای فیلم است، صدا است یا تصویر"""
-    
     if is_image_url(url):
         return 'image'
     
@@ -257,7 +252,6 @@ def auto_detect_media_type(url):
     
     return 'video'
 
-# ================= موتور دانلود جهانی با ۲۰ روش =================
 class UniversalDownloader:
     def __init__(self):
         self.methods = [
@@ -534,7 +528,6 @@ class UniversalDownloader:
         return None
     
     def method_17_youtube_specific(self, url):
-        """روش مخصوص یوتیوب با کلاینت‌های مختلف"""
         if 'youtube.com' not in url and 'youtu.be' not in url:
             return None
         
@@ -561,8 +554,6 @@ class UniversalDownloader:
                     'user_agent': random.choice(USER_AGENTS),
                 }
                 
-                logger.info(f"تلاش با کلاینت یوتیوب: {client}")
-                
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     
@@ -572,7 +563,6 @@ class UniversalDownloader:
                         filepath = ydl.prepare_filename(info)
                     
                     if os.path.exists(filepath):
-                        logger.info(f"دانلود یوتیوب با کلاینت {client} موفق بود")
                         return {'file': filepath, 'method': f'روش 17 (YouTube-{client})', 'size': os.path.getsize(filepath), 'type': 'video'}
             except Exception as e:
                 logger.error(f"خطا در کلاینت یوتیوب {client}: {e}")
@@ -581,16 +571,13 @@ class UniversalDownloader:
         return None
     
     def method_18_soundcloud_specific(self, url):
-        """روش مخصوص ساوندکلاود"""
         if 'soundcloud.com' not in url and 'on.soundcloud.com' not in url:
             return None
         
-        # رفع لینک کوتاه ساوندکلاود
         try:
             if 'on.soundcloud.com' in url:
                 response = requests.head(url, allow_redirects=True, timeout=10)
                 url = response.url
-                logger.info(f"لینک ساوندکلاود تبدیل شد: {url}")
         except:
             pass
         
@@ -634,8 +621,7 @@ class UniversalDownloader:
         
         return None
     
-    def download(self, url, progress_callback=None, media_type_hint=None):
-        """دانلود با توجه به نوع رسانه تشخیص داده شده"""
+    def download(self, url, progress_callback=None):
         logger.info(f"شروع دانلود برای URL: {url}")
         
         for i, method in enumerate(self.methods):
@@ -645,13 +631,10 @@ class UniversalDownloader:
                 progress_callback(f"🔄 **تلاش با روش {i+1}: {method_name}...**")
             
             try:
-                logger.info(f"تلاش روش {i+1}: {method_name}")
                 result = method(url)
                 if result:
                     logger.info(f"روش {i+1} موفق بود!")
                     return result
-                else:
-                    logger.warning(f"روش {i+1} ناموفق بود")
             except Exception as e:
                 logger.error(f"خطا در روش {i+1}: {e}")
             
@@ -662,7 +645,6 @@ class UniversalDownloader:
 
 downloader = UniversalDownloader()
 
-# ================= کیبورد ادمین =================
 def admin_main_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -675,7 +657,6 @@ def admin_main_keyboard():
     )
     return markup
 
-# ================= استارت =================
 @bot.message_handler(commands=['start'])
 def start(message):
     user_id = message.from_user.id
@@ -720,7 +701,6 @@ def start(message):
     )
     bot.reply_to(message, welcome_text, parse_mode="Markdown")
 
-# ================= پنل ادمین =================
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
     if message.from_user.id != ADMIN_ID:
@@ -1040,13 +1020,11 @@ def check_membership_callback(call):
             parse_mode="Markdown"
         )
 
-# ================= دریافت لینک با تشخیص خودکار =================
 @bot.message_handler(content_types=['text'])
 def handle(message):
     user_id = message.from_user.id
     chat_id = message.chat.id
     
-    # بررسی عضویت
     if not is_member(user_id):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
@@ -1062,12 +1040,10 @@ def handle(message):
         )
         return
     
-    # استخراج لینک
     url = extract_url(message.text)
     if not url:
         return
     
-    # بررسی محدودیت روزانه
     if not check_daily_limit(user_id):
         remaining = get_remaining_limit(user_id)
         bot.reply_to(
@@ -1079,22 +1055,18 @@ def handle(message):
         )
         return
     
-    # بررسی دانلود همزمان
     if user_id in active_downloads:
         bot.reply_to(message, "⏳ یک دانلود در حال انجام است... لطفاً صبر کنید.")
         return
     
-    # رفع لینک کوتاه
     resolved_url = resolve_short_url(url)
     if resolved_url != url:
         bot.send_message(chat_id, "🔗 **لینک کوتاه تشخیص داده شد.**", parse_mode="Markdown")
         url = resolved_url
     
-    # تشخیص پلتفرم
     platform = detect_platform(url)
     user_links[user_id] = url
     
-    # ========== تشخیص خودکار نوع محتوا ==========
     status_msg = bot.reply_to(
         message,
         f"🔍 **در حال تشخیص خودکار محتوا...**\n\n"
@@ -1123,7 +1095,6 @@ def handle(message):
         parse_mode="Markdown"
     )
     
-    # شروع دانلود خودکار
     def process():
         try:
             with lock:
@@ -1230,7 +1201,6 @@ def handle(message):
     
     threading.Thread(target=process, daemon=True).start()
 
-# ================= وب هوک =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     json_str = request.get_data().decode("utf-8")
