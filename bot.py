@@ -20,7 +20,7 @@ import yt_dlp
 import requests
 
 # ================= تنظیمات مستقیم =================
-TOKEN = "8629099905:AAHy7-EcCBj2YyxbcjxfW91qRslQ-21311M"
+TOKEN = "8629099905:AAHYL2VGTqTIVCscKd7QJNAvY0gEbVEEeg4"
 ADMIN_ID = 8226091292
 MAX_FILE_SIZE = 100 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
