@@ -528,10 +528,20 @@ class UniversalDownloader:
         return None
     
     def method_17_youtube_specific(self, url):
+        """روش مخصوص یوتیوب با پشتیبانی از کوکی"""
         if 'youtube.com' not in url and 'youtu.be' not in url:
             return None
         
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
+        
+        # بررسی وجود فایل کوکی
+        cookie_file = 'cookies.txt'
+        use_cookies = os.path.exists(cookie_file)
+        
+        if use_cookies:
+            logger.info(f"✅ فایل کوکی برای یوتیوب پیدا شد: {cookie_file}")
+        else:
+            logger.warning(f"⚠️ فایل کوکی یافت نشد! لطفاً فایل {cookie_file} را در مسیر پروژه قرار دهید.")
         
         clients = ['android', 'ios', 'web', 'android_embedded']
         
@@ -554,6 +564,11 @@ class UniversalDownloader:
                     'user_agent': random.choice(USER_AGENTS),
                 }
                 
+                # اضافه کردن کوکی به تنظیمات در صورت وجود
+                if use_cookies:
+                    ydl_opts['cookiefile'] = cookie_file
+                    logger.info(f"🔑 استفاده از کوکی برای کلاینت {client}")
+                
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
                     
@@ -563,6 +578,7 @@ class UniversalDownloader:
                         filepath = ydl.prepare_filename(info)
                     
                     if os.path.exists(filepath):
+                        logger.info(f"✅ دانلود یوتیوب با کلاینت {client} موفق شد!")
                         return {'file': filepath, 'method': f'روش 17 (YouTube-{client})', 'size': os.path.getsize(filepath), 'type': 'video'}
             except Exception as e:
                 logger.error(f"خطا در کلاینت یوتیوب {client}: {e}")
