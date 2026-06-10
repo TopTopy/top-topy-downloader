@@ -28,6 +28,7 @@ LOGS_PATH = "logs"
 WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
+# محدودیت پیش‌فرض - باید قبل از استفاده در توابع تعریف شود
 DAILY_LIMIT = 20
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
@@ -813,8 +814,13 @@ def admin_panel(message):
 
     bot.send_message(message.chat.id, text, reply_markup=admin_main_keyboard(), parse_mode="Markdown")
 
+# متغیر سراسری برای تغییر در توابع
+daily_limit_var = DAILY_LIMIT
+
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_callback(call):
+    global daily_limit_var, DAILY_LIMIT
+    
     if call.from_user.id != ADMIN_ID:
         bot.answer_callback_query(call.id, "⛔ دسترسی ندارید!")
         return
@@ -859,16 +865,16 @@ def admin_callback(call):
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
     
     elif call.data == "admin_inc_limit":
-        global DAILY_LIMIT
         DAILY_LIMIT += 5
+        daily_limit_var = DAILY_LIMIT
         add_admin_log("تغییر محدودیت", f"افزایش به {DAILY_LIMIT}")
         bot.answer_callback_query(call.id, f"محدودیت به {DAILY_LIMIT} افزایش یافت!")
         admin_panel(call.message)
     
     elif call.data == "admin_dec_limit":
-        global DAILY_LIMIT
         if DAILY_LIMIT > 5:
             DAILY_LIMIT -= 5
+            daily_limit_var = DAILY_LIMIT
             add_admin_log("تغییر محدودیت", f"کاهش به {DAILY_LIMIT}")
             bot.answer_callback_query(call.id, f"محدودیت به {DAILY_LIMIT} کاهش یافت!")
         else:
@@ -1024,14 +1030,16 @@ def admin_callback(call):
         admin_panel(call.message)
 
 def set_daily_limit(message, original_message):
+    global DAILY_LIMIT, daily_limit_var
+    
     if message.from_user.id != ADMIN_ID:
         return
     
     try:
         new_limit = int(message.text.strip())
         if 1 <= new_limit <= 500:
-            global DAILY_LIMIT
             DAILY_LIMIT = new_limit
+            daily_limit_var = DAILY_LIMIT
             add_admin_log("تغییر محدودیت", f"تنظیم به {DAILY_LIMIT}")
             bot.send_message(message.chat.id, f"✅ محدودیت روزانه به `{DAILY_LIMIT}` تغییر یافت!", parse_mode="Markdown")
         else:
