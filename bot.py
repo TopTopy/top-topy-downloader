@@ -20,7 +20,7 @@ ADMIN_ID = 8226091292
 CHANNEL_USERNAME = "@top_topy_downloader"  # نام کاربری کانال برای عضویت اجباری
 MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
-WEBHOOK_URL = "https://top-topy-downloader-production.up.railway.app/webhook"
+WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
 # محدودیت روزانه
