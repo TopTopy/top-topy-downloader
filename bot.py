@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 GOD MODE Downloader Bot - نسخه نهایی
-تمامی تنظیمات مستقیم در کد | بدون نیاز به متغیر محیطی
+بدون نیاز به عضویت اجباری
 """
 
 import os
@@ -26,8 +26,6 @@ MAX_FILE_SIZE = 100 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 CACHE_PATH = "cache"
 PORT = 8080
-REQUIRED_CHANNEL = "@top_topy_downloader"
-CHANNEL_LINK = "https://t.me/top_topy_downloader"
 
 MAX_WORKERS = 2
 MAX_QUEUE_SIZE = 20
@@ -63,8 +61,6 @@ active_downloads = {}
 active_lock = threading.Lock()
 user_rate_limit = {}
 rate_lock = threading.Lock()
-pending_links = {}
-pending_lock = threading.Lock()
 
 # ================= User-Agent =================
 USER_AGENTS = [
@@ -334,21 +330,6 @@ def detect_content_type(url):
         return 'audio', 'آهنگ', '🎵'
     return 'video', 'ویدیو', '🎬'
 
-def is_member(user_id):
-    try:
-        m = bot.get_chat_member(REQUIRED_CHANNEL, int(user_id))
-        return m.status in ["member", "administrator", "creator"]
-    except:
-        return True
-
-def join_keyboard():
-    markup = InlineKeyboardMarkup(row_width=1)
-    markup.add(
-        InlineKeyboardButton("📢 عضویت در کانال", url=CHANNEL_LINK),
-        InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")
-    )
-    return markup
-
 def check_rate_limit(user_id):
     with rate_lock:
         now = time.time()
@@ -437,11 +418,6 @@ for _ in range(MAX_WORKERS):
 # ================= دستورات بات =================
 @bot.message_handler(commands=['start'])
 def start_cmd(message):
-    uid = message.from_user.id
-    if not is_member(uid):
-        bot.reply_to(message, "🔒 ابتدا در کانال عضو شوید.", reply_markup=join_keyboard(), parse_mode="Markdown")
-        return
-    
     ff_status = "✅" if FFMPEG_OK else "❌"
     welcome = (
         "💣 **GOD MODE BOT**\n\n"
@@ -500,39 +476,9 @@ def clean_cmd(message):
             pass
     bot.reply_to(message, f"✅ {d} فایل پاک شد!")
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback(call):
-    uid = call.from_user.id
-    cid = call.message.chat.id
-    
-    if call.data == "check_join":
-        mem = is_member(uid)
-        if mem:
-            bot.answer_callback_query(call.id, "عضویت تایید شد ✅")
-            safe_edit("✅ عضویت تایید شد!", cid, call.message.message_id)
-            with pending_lock:
-                if uid in pending_links:
-                    text = pending_links.pop(uid)
-                    fake = type('obj', (object,), {
-                        'from_user': type('obj', (object,), {'id': uid})(),
-                        'chat': type('obj', (object,), {'id': cid})(),
-                        'text': text
-                    })()
-                    handle_msg(fake)
-        else:
-            bot.answer_callback_query(call.id, "عضو نیستید ❌")
-            safe_edit("❌ عضویت تایید نشد!", cid, call.message.message_id)
-        return
-
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def handle_msg(message):
     uid = message.from_user.id
-    
-    if not is_member(uid):
-        with pending_lock:
-            pending_links[uid] = message.text
-        bot.reply_to(message, "🔒 ابتدا عضو کانال شوید.", reply_markup=join_keyboard(), parse_mode="Markdown")
-        return
     
     with active_lock:
         if uid in active_downloads:
@@ -576,7 +522,7 @@ def handle_msg(message):
             active_downloads.pop(uid, None)
         safe_edit("⚠️ خطا!", message.chat.id, msg.message_id)
 
-# ================= وب‌هوک =================
+# ================= وب‌هوک و اجرا =================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
@@ -600,7 +546,6 @@ def health():
         "total": stats['total']
     })
 
-# ================= اجرا =================
 def run_polling():
     while True:
         try:
@@ -618,6 +563,7 @@ if __name__ == "__main__":
     
     try:
         bot.remove_webhook()
+        print("✅ Webhook removed")
     except:
         pass
     
