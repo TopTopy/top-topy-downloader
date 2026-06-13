@@ -500,7 +500,11 @@ def start(message):
 
 @bot.message_handler(commands=['admin'])
 def admin_panel(message):
-    if message.from_user.id != ADMIN_ID:
+    user_id = message.from_user.id
+    # دیباگ - بعد از دیدن آیدی می‌تونی این خط رو پاک کنی
+    bot.reply_to(message, f"🔍 آیدی شما: `{user_id}`\nآیدی مورد انتظار: `{ADMIN_ID}`", parse_mode="Markdown")
+    
+    if user_id != ADMIN_ID:
         bot.reply_to(message, "⛔ دسترسی ندارید!")
         return
     total_users = len(users_data)
