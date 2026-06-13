@@ -8,7 +8,7 @@ import subprocess
 import random
 import logging
 import sys
-import hashlib
+import glob
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, request
@@ -20,24 +20,22 @@ from urllib.parse import urlparse
 
 # ================= تنظیمات =================
 TOKEN = "8629099905:AAHYL2VGTqTIVCscKd7QJNAvY0gEbVEEeg4"
-ADMIN_ID = 8226091292
+ADMIN_IDS = [8226091292]  # لیست ادمین‌ها (می‌توانید چند تا اضافه کنید)
 CHANNEL_USERNAME = "@top_topy_downloader"
+MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
-CACHE_PATH = "cache"
 LOGS_PATH = "logs"
 WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
 DAILY_LIMIT_NORMAL = 20
 DAILY_LIMIT_VIP = 100
-DEFAULT_DELETE_SECONDS = 30
-MAX_FILE_SIZE_MB = 500
+FILE_DELETE_SECONDS = 30
 
 os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-os.makedirs(CACHE_PATH, exist_ok=True)
 os.makedirs(LOGS_PATH, exist_ok=True)
 
-# ================= لاگ فقط مهم =================
+# ================= لاگ =================
 logging.basicConfig(
     level=logging.WARNING,
     format='%(asctime)s - %(levelname)s - %(message)s',
@@ -51,10 +49,9 @@ logger = logging.getLogger(__name__)
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# ================= فایل ذخیره کاربران و کش =================
+# ================= فایل ذخیره کاربران =================
 USERS_FILE = "users.json"
 SETTINGS_FILE = "settings.json"
-CACHE_FILE = "url_cache.json"
 
 def load_json(file, default):
     if os.path.exists(file):
@@ -66,41 +63,10 @@ def save_json(file, data):
     with open(file, 'w') as f:
         json.dump(data, f, indent=4)
 
-settings = load_json(SETTINGS_FILE, {"delete_seconds": DEFAULT_DELETE_SECONDS, "max_size_mb": MAX_FILE_SIZE_MB})
 users_data = load_json(USERS_FILE, {})
-url_cache = load_json(CACHE_FILE, {})
+settings = load_json(SETTINGS_FILE, {"delete_seconds": FILE_DELETE_SECONDS, "max_size_mb": MAX_FILE_SIZE//(1024*1024)})
 
-def save_cache():
-    now = time.time()
-    to_delete = [k for k, v in url_cache.items() if now - v.get('timestamp', 0) > 7*86400]
-    for k in to_delete:
-        if os.path.exists(url_cache[k]['filepath']):
-            os.remove(url_cache[k]['filepath'])
-        del url_cache[k]
-    save_json(CACHE_FILE, url_cache)
-
-def add_to_cache(url, filepath, metadata):
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    url_cache[url_hash] = {
-        'url': url,
-        'filepath': filepath,
-        'metadata': metadata,
-        'timestamp': time.time()
-    }
-    save_json(CACHE_FILE, url_cache)
-
-def get_from_cache(url):
-    url_hash = hashlib.sha256(url.encode()).hexdigest()
-    if url_hash in url_cache and os.path.exists(url_cache[url_hash]['filepath']):
-        return url_cache[url_hash]
-    return None
-
-active_downloads = {}
-admin_logs = []
-lock = threading.Lock()
-cancel_events = {}
-
-# ================= توابع مدیریت کاربر =================
+# ================= توابع کاربری =================
 def get_user_tier(user_id):
     uid = str(user_id)
     if uid not in users_data:
@@ -211,12 +177,8 @@ def detect_platform(url):
         'telewebion': ['telewebion.com'],
         'filimo': ['filimo.com'],
         'namasha': ['namasha.com'],
-        'reddit': ['reddit.com'],
-        'pinterest': ['pinterest.com', 'pin.it'],
-        'twitch': ['twitch.tv'],
-        'vimeo': ['vimeo.com'],
-        'dailymotion': ['dailymotion.com'],
-        'spotify': ['spotify.com'],
+        'clips': ['clips.ir'],
+        'tamasha': ['tamasha.com'],
     }
     for platform, domains in platforms.items():
         for domain in domains:
@@ -224,131 +186,100 @@ def detect_platform(url):
                 return platform.capitalize()
     return "Other"
 
-def is_playlist(url):
-    return 'playlist' in url or 'list=' in url or 'aparat.com/v/playlist' in url
-
-def get_playlist_info(url):
-    try:
-        ydl_opts = {'quiet': True, 'extract_flat': True, 'force_generic_extractor': False}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            if 'entries' in info:
-                entries = info['entries']
-                return [entry.get('url') for entry in entries if entry]
-        return None
-    except:
-        return None
-
 def get_storage_usage():
     total = 0
     count = 0
-    for path in [DOWNLOAD_PATH, CACHE_PATH]:
-        for root, dirs, files in os.walk(path):
-            for f in files:
-                fp = os.path.join(root, f)
-                if os.path.exists(fp):
-                    total += os.path.getsize(fp)
-                    count += 1
+    for root, dirs, files in os.walk(DOWNLOAD_PATH):
+        for f in files:
+            fp = os.path.join(root, f)
+            if os.path.exists(fp):
+                total += os.path.getsize(fp)
+                count += 1
     return total, count
 
 def clean_storage(keep_days=1):
     deleted = 0
     size = 0
     now = time.time()
-    for path in [DOWNLOAD_PATH, CACHE_PATH]:
-        for root, dirs, files in os.walk(path):
-            for f in files:
-                fp = os.path.join(root, f)
-                if os.path.exists(fp) and now - os.path.getmtime(fp) > keep_days*86400:
-                    size += os.path.getsize(fp)
-                    os.remove(fp)
-                    deleted += 1
+    for root, dirs, files in os.walk(DOWNLOAD_PATH):
+        for f in files:
+            fp = os.path.join(root, f)
+            if os.path.exists(fp) and now - os.path.getmtime(fp) > keep_days*86400:
+                size += os.path.getsize(fp)
+                os.remove(fp)
+                deleted += 1
     return deleted, size
 
-def schedule_file_deletion(filepath, seconds=None):
-    if seconds is None:
-        seconds = settings.get("delete_seconds", DEFAULT_DELETE_SECONDS)
+def schedule_file_deletion(filepath):
     def delete():
         if os.path.exists(filepath):
-            try:
-                os.remove(filepath)
-                logger.info(f"Deleted: {filepath}")
-            except:
-                pass
-    timer = threading.Timer(seconds, delete)
+            os.remove(filepath)
+            logger.info(f"Deleted: {filepath}")
+    timer = threading.Timer(settings.get("delete_seconds", FILE_DELETE_SECONDS), delete)
     timer.daemon = True
     timer.start()
-    return timer
 
-# ================= کلاس دانلودر با اجرای همزمان ۱۸ روش =================
-class ParallelDownloader:
+# ================= کلاس دانلودر (بهینه برای یوتیوب) =================
+class YouTubeDownloader:
     def __init__(self):
-        self.methods = self._build_methods()
-    
-    def _build_methods(self):
-        formats = [
-            ('bestvideo+bestaudio/best', 'بهترین کیفیت'),
-            ('best[height<=1080]', '1080p'),
-            ('best[height<=720]', '720p'),
-            ('best[height<=480]', '480p'),
-            ('best[height<=360]', '360p'),
-            ('best[height<=240]', '240p'),
-            ('bestaudio', 'صوتی MP3'),
-            ('bestvideo', 'فقط ویدیو (بدون صدا)'),
-            ('worst', 'کمترین کیفیت'),
-        ]
-        clients = ['android', 'ios', 'web']
-        for client in clients:
-            formats.append(('best', f'کلاینت {client}'))
-        formats.append(('best', 'subprocess بهترین'))
-        return formats
-    
-    def _download_one(self, url, format_spec, method_name):
+        self.methods = []
+        # فقط روش‌های ضروری و به ترتیب اولویت
+        if HAS_FFMPEG:
+            self.methods.append(('bestvideo+bestaudio/best', 'بهترین کیفیت (ترکیبی)'))
+        self.methods.append(('best', 'بهترین کیفیت موجود'))
+        self.methods.append(('bestvideo[height<=720]+bestaudio/best[height<=720]', '720p'))
+        self.methods.append(('best[height<=480]', '480p'))
+        self.methods.append(('bestaudio', 'صوتی MP3'))
+        self.methods.append(('worst', 'کمترین کیفیت'))
+
+    def _download(self, url, format_spec, method_name):
+        # تبدیل لینک shorts به معمولی
+        if 'youtube.com/shorts/' in url:
+            url = url.replace('/shorts/', '/watch?v=')
         unique = str(int(time.time()*1000)) + str(random.randint(100, 999))
         is_audio = (format_spec == 'bestaudio')
         if is_audio:
-            output = os.path.join(DOWNLOAD_PATH, f"audio_{unique}.mp3")
-            ydl_opts = {
-                'format': 'bestaudio',
-                'outtmpl': output,
-                'noplaylist': True,
-                'quiet': True,
-                'no_warnings': True,
-                'retries': 10,
-                'fragment_retries': 10,
-                'concurrent_fragment_downloads': 10,
-                'throttledratelimit': 0,
-                'continue_dl': True,
-                'socket_timeout': 60,
-                'geo_bypass': True,
-                'user_agent': random.choice(USER_AGENTS),
-            }
-            if HAS_FFMPEG:
-                ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+            output_template = os.path.join(DOWNLOAD_PATH, f"audio_{unique}.mp3")
         else:
-            output = os.path.join(DOWNLOAD_PATH, f"video_{unique}.%(ext)s")
-            ydl_opts = {
-                'format': format_spec,
-                'outtmpl': output,
-                'noplaylist': True,
-                'quiet': True,
-                'no_warnings': True,
-                'retries': 10,
-                'fragment_retries': 10,
-                'concurrent_fragment_downloads': 10,
-                'throttledratelimit': 0,
-                'continue_dl': True,
-                'socket_timeout': 60,
-                'geo_bypass': True,
-                'user_agent': random.choice(USER_AGENTS),
+            output_template = os.path.join(DOWNLOAD_PATH, f"video_{unique}.%(ext)s")
+
+        ydl_opts = {
+            'format': format_spec,
+            'outtmpl': output_template,
+            'noplaylist': True,
+            'quiet': False,       # برای دیباگ (در نهایت می‌تونی True کنی)
+            'no_warnings': False,
+            'verbose': True,      # برای دیدن جزئیات خطا
+            'retries': 5,
+            'fragment_retries': 5,
+            'concurrent_fragment_downloads': 3,  # کاهش همزمانی برای جلوگیری از 429
+            'throttledratelimit': 0,
+            'socket_timeout': 60,
+            'geo_bypass': True,
+            'user_agent': random.choice(USER_AGENTS),
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web'],  # اولویت با android
+                }
             }
+        }
+        if is_audio and HAS_FFMPEG:
+            ydl_opts['postprocessors'] = [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}]
+
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-                filepath = info.get('requested_downloads', [{}])[0].get('filepath') or ydl.prepare_filename(info)
+                # پیدا کردن فایل واقعی دانلود شده
+                base = ydl.prepare_filename(info)
                 if is_audio and HAS_FFMPEG:
-                    filepath = os.path.splitext(filepath)[0] + '.mp3'
-                if os.path.exists(filepath):
+                    base = os.path.splitext(base)[0] + '.mp3'
+                # اگر دقیقاً همان فایل وجود نداشت، با الگو جستجو کن
+                if not os.path.exists(base):
+                    pattern = base.replace('%(ext)s', '*')
+                    files = glob.glob(pattern)
+                    if files:
+                        base = files[0]
+                if os.path.exists(base):
                     metadata = {
                         'title': info.get('title', 'Unknown'),
                         'uploader': info.get('uploader', 'Unknown'),
@@ -357,67 +288,54 @@ class ParallelDownloader:
                         'like_count': info.get('like_count', 0),
                         'view_count': info.get('view_count', 0),
                     }
-                    return {'file': filepath, 'method': method_name, 'size': os.path.getsize(filepath),
+                    return {'file': base, 'method': method_name, 'size': os.path.getsize(base),
                             'type': 'audio' if is_audio else 'video', 'metadata': metadata}
         except Exception as e:
-            logger.warning(f"{method_name} failed: {e}")
+            logger.error(f"{method_name} failed: {e}")
         return None
 
-    def download_parallel(self, url):
-        stop_flag = threading.Event()
-        result_holder = [None]
+    def download(self, url, progress_callback=None):
+        # اجرای روش‌ها به ترتیب (نه همزمان) برای جلوگیری از 429
+        for fmt, name in self.methods:
+            if progress_callback:
+                progress_callback(f"🔄 تلاش: {name}...")
+            result = self._download(url, fmt, name)
+            if result:
+                return result
+            time.sleep(1)  # فاصله بین روش‌ها
+        return None
 
-        def worker(format_spec, method_name):
-            if stop_flag.is_set():
-                return None
-            res = self._download_one(url, format_spec, method_name)
-            if res and not stop_flag.is_set():
-                stop_flag.set()
-                result_holder[0] = res
-            return res
+downloader = YouTubeDownloader()
+active_downloads = {}
+admin_logs = []
+lock = threading.Lock()
+cancel_events = {}
 
-        with ThreadPoolExecutor(max_workers=len(self.methods)) as executor:
-            futures = {executor.submit(worker, fmt, name): (fmt, name) for fmt, name in self.methods}
-            for future in as_completed(futures):
-                if result_holder[0] is not None:
-                    for f in futures:
-                        f.cancel()
-                    break
-                future.result()
-        return result_holder[0]
-
-downloader = ParallelDownloader()
-
-# ================= دکمه‌های شیشه‌ای اصلی =================
+# ================= منوی اصلی با دکمه‌های شیشه‌ای =================
 def main_menu_keyboard(user_id):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton("➕ افزودن به گروه", url=f"https://t.me/{bot.get_me().username}?startgroup=true"),
         InlineKeyboardButton("📚 راهنما", callback_data="help_menu"),
         InlineKeyboardButton("📊 آمار من", callback_data="my_stats"),
-    )
-    markup.add(
         InlineKeyboardButton("📢 کانال ما", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"),
-        InlineKeyboardButton("👑 پنل مدیریت", callback_data="admin_panel_from_main"),
     )
+    if user_id in ADMIN_IDS:
+        markup.add(InlineKeyboardButton("👑 پنل مدیریت", callback_data="admin_panel_from_main"))
     return markup
 
 @bot.callback_query_handler(func=lambda call: call.data == "help_menu")
 def help_menu_callback(call):
     text = (
         "📚 **راهنمای سریع ربات**\n\n"
-        "1️⃣ لینک مورد نظر خود را از هر پلتفرمی (یوتیوب، اینستاگرام، تیک‌تاک، آپارات و...) ارسال کنید.\n"
-        "2️⃣ ربات به‌طور خودکار **بالاترین کیفیت ممکن** را دانلود و برایتان ارسال می‌کند.\n"
-        "3️⃣ فایل‌ها پس از ارسال، از سرور پاک می‌شوند (فقط ۳۰ ثانیه نگهداری).\n"
+        "1️⃣ لینک خود را از یوتیوب، اینستاگرام، تیک‌تاک، آپارات و... ارسال کنید.\n"
+        "2️⃣ ربات بهترین کیفیت ممکن را دانلود و برایتان ارسال می‌کند.\n"
+        "3️⃣ فایل‌ها پس از ۳۰ ثانیه از سرور پاک می‌شوند.\n"
         "4️⃣ هر کاربر روزانه ۲۰ دانلود رایگان دارد (VIPها ۱۰۰ دانلود).\n"
-        "5️⃣ برای لغو دانلود در حال انجام، دستور /cancel را بفرستید.\n\n"
-        "🎯 **سایت‌های پشتیبانی شده:**\n"
-        "YouTube, Instagram, TikTok, Twitter/X, Facebook, SoundCloud, Aparat, Reddit, Pinterest, Twitch, Vimeo, Dailymotion, Spotify و...\n\n"
-        "💡 **توصیه:** برای دانلود پلی‌لیست، لینک پلی‌لیست را مستقیم بفرستید.\n"
-        "✅ در صورت مشکل، با ادمین تماس بگیرید."
+        "5️⃣ برای لغو دانلود، دستور /cancel را بفرستید.\n\n"
+        "✅ در صورت مشکل با ادمین تماس بگیرید."
     )
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔙 بازگشت به منو", callback_data="back_to_main"))
+    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
 
 @bot.callback_query_handler(func=lambda call: call.data == "my_stats")
@@ -432,19 +350,10 @@ def my_stats_callback(call):
         f"👑 سطح: {'VIP ⭐' if tier=='vip' else 'عادی'}\n"
         f"📥 دانلود امروز: {daily_used} از {DAILY_LIMIT_VIP if tier=='vip' else DAILY_LIMIT_NORMAL}\n"
         f"✅ باقی‌مانده امروز: {remaining}\n"
-        f"🔢 کل دانلودهای انجام شده: {total_downloads}\n\n"
-        f"💎 برای دریافت VIP با ادمین تماس بگیرید."
+        f"🔢 کل دانلودهای انجام شده: {total_downloads}"
     )
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("🔙 بازگشت به منو", callback_data="back_to_main"))
+    markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_main"))
     bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
-
-@bot.callback_query_handler(func=lambda call: call.data == "admin_panel_from_main")
-def admin_panel_from_main(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ این بخش فقط برای ادمین است!", show_alert=True)
-        return
-    admin_panel(call.message)
 
 @bot.callback_query_handler(func=lambda call: call.data == "back_to_main")
 def back_to_main_callback(call):
@@ -460,7 +369,7 @@ def back_to_main_callback(call):
     )
     bot.edit_message_text(welcome, call.message.chat.id, call.message.message_id, reply_markup=main_menu_keyboard(user_id), parse_mode="Markdown")
 
-# ================= پنل ادمین =================
+# ================= پنل ادمین (با تابع مجزا) =================
 def admin_main_keyboard():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -474,6 +383,19 @@ def admin_main_keyboard():
         InlineKeyboardButton("🔄 ریست ربات", callback_data="admin_restart")
     )
     return markup
+
+def show_admin_panel(chat_id):
+    total_users = len(users_data)
+    banned = sum(1 for u in users_data.values() if u.get("banned", False))
+    vip = sum(1 for u in users_data.values() if u.get("tier") == "vip")
+    storage_used, files_count = get_storage_usage()
+    text = f"👑 **پنل مدیریت**\n👥 کاربران: {total_users}\n🚫 بن شده: {banned}\n💎 VIP: {vip}\n💾 فضا: {storage_used/1024/1024:.1f}MB\n📂 فایل‌ها: {files_count}\n⚙️ حذف خودکار: {settings.get('delete_seconds', FILE_DELETE_SECONDS)} ثانیه"
+    bot.send_message(chat_id, text, parse_mode="Markdown", reply_markup=admin_main_keyboard())
+
+# ================= هندلرها =================
+@bot.message_handler(commands=['id'])
+def show_id(message):
+    bot.reply_to(message, f"🆔 آیدی شما: `{message.from_user.id}`", parse_mode="Markdown")
 
 @bot.message_handler(commands=['start'])
 def start(message):
@@ -499,34 +421,39 @@ def start(message):
     bot.reply_to(message, welcome, reply_markup=main_menu_keyboard(user_id), parse_mode="Markdown")
 
 @bot.message_handler(commands=['admin'])
-def admin_panel(message):
+def admin_panel_command(message):
     user_id = message.from_user.id
-    # دیباگ - بعد از دیدن آیدی می‌تونی این خط رو پاک کنی
-    bot.reply_to(message, f"🔍 آیدی شما: `{user_id}`\nآیدی مورد انتظار: `{ADMIN_ID}`", parse_mode="Markdown")
-    
-    if user_id != ADMIN_ID:
+    if str(user_id) not in [str(uid) for uid in ADMIN_IDS]:
         bot.reply_to(message, "⛔ دسترسی ندارید!")
         return
-    total_users = len(users_data)
-    banned = sum(1 for u in users_data.values() if u.get("banned", False))
-    vip = sum(1 for u in users_data.values() if u.get("tier") == "vip")
-    storage_used, files_count = get_storage_usage()
-    text = f"👑 **پنل مدیریت**\n👥 کاربران: {total_users}\n🚫 بن شده: {banned}\n💎 VIP: {vip}\n💾 فضا: {storage_used/1024/1024:.1f}MB\n📂 فایل‌ها: {files_count}\n⚙️ حذف خودکار: {settings['delete_seconds']} ثانیه"
-    bot.send_message(message.chat.id, text, parse_mode="Markdown", reply_markup=admin_main_keyboard())
+    show_admin_panel(message.chat.id)
 
+@bot.callback_query_handler(func=lambda call: call.data == "admin_panel_from_main")
+def admin_panel_from_main_callback(call):
+    user_id = call.from_user.id
+    if str(user_id) not in [str(uid) for uid in ADMIN_IDS]:
+        bot.answer_callback_query(call.id, "⛔ فقط ادمین", show_alert=True)
+        return
+    show_admin_panel(call.message.chat.id)
+
+# ================= بقیه کالبک‌های ادمین (با استفاده از show_admin_panel) =================
 @bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
 def admin_callback(call):
-    if call.from_user.id != ADMIN_ID:
-        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید!")
+    user_id = call.from_user.id
+    if str(user_id) not in [str(uid) for uid in ADMIN_IDS]:
+        bot.answer_callback_query(call.id, "⛔ دسترسی ندارید!", show_alert=True)
         return
+
     if call.data == "admin_stats":
         today = datetime.now().strftime("%Y%m%d")
         active = sum(1 for u in users_data.values() if u.get("last_date") == today)
         downloads = sum(u.get("daily_count", 0) for u in users_data.values() if u.get("last_date") == today)
+        text = f"📊 **آمار امروز**\n👥 کاربران فعال: {active}\n📥 دانلودها: {downloads}"
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
-        bot.edit_message_text(f"📊 **آمار امروز**\n👥 کاربران فعال: {active}\n📥 دانلودها: {downloads}", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_settings":
-        text = f"⚙️ **تنظیمات ربات**\nمحدودیت عادی: {DAILY_LIMIT_NORMAL}\nمحدودیت VIP: {DAILY_LIMIT_VIP}\nحذف فایل بعد: {settings['delete_seconds']} ثانیه\nحداکثر حجم: {settings['max_size_mb']} MB"
+        text = f"⚙️ **تنظیمات ربات**\nمحدودیت عادی: {DAILY_LIMIT_NORMAL}\nمحدودیت VIP: {DAILY_LIMIT_VIP}\nحذف فایل بعد: {settings.get('delete_seconds', FILE_DELETE_SECONDS)} ثانیه\nحداکثر حجم: {settings.get('max_size_mb', 500)} MB"
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
             InlineKeyboardButton("➕+۵ ثانیه", callback_data="admin_inc_del"),
@@ -536,37 +463,43 @@ def admin_callback(call):
             InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
         )
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_inc_del":
-        settings["delete_seconds"] += 5
+        settings["delete_seconds"] = settings.get("delete_seconds", FILE_DELETE_SECONDS) + 5
         save_json(SETTINGS_FILE, settings)
         bot.answer_callback_query(call.id, f"زمان حذف: {settings['delete_seconds']} ثانیه")
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
     elif call.data == "admin_dec_del":
-        if settings["delete_seconds"] > 5:
+        if settings.get("delete_seconds", FILE_DELETE_SECONDS) > 5:
             settings["delete_seconds"] -= 5
             save_json(SETTINGS_FILE, settings)
             bot.answer_callback_query(call.id, f"زمان حذف: {settings['delete_seconds']} ثانیه")
         else:
             bot.answer_callback_query(call.id, "حداقل ۵ ثانیه!", show_alert=True)
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
     elif call.data == "admin_inc_size":
-        settings["max_size_mb"] = min(2000, settings["max_size_mb"] + 50)
+        settings["max_size_mb"] = min(2000, settings.get("max_size_mb", 500) + 50)
         save_json(SETTINGS_FILE, settings)
         bot.answer_callback_query(call.id, f"حداکثر حجم: {settings['max_size_mb']}MB")
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
     elif call.data == "admin_dec_size":
-        if settings["max_size_mb"] > 50:
+        if settings.get("max_size_mb", 500) > 50:
             settings["max_size_mb"] -= 50
             save_json(SETTINGS_FILE, settings)
             bot.answer_callback_query(call.id, f"حداکثر حجم: {settings['max_size_mb']}MB")
         else:
             bot.answer_callback_query(call.id, "حداقل ۵۰MB!", show_alert=True)
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
     elif call.data == "admin_users":
         users_list = "\n".join([f"`{uid}` - {'VIP' if u['tier']=='vip' else 'عادی'} - {'🚫' if u.get('banned') else '✅'}" for uid, u in list(users_data.items())[:20]])
         text = f"📋 **کاربران (۲۰ نفر اول)**\n{users_list}"
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_manage":
         markup = InlineKeyboardMarkup(row_width=2)
         markup.add(
@@ -577,45 +510,99 @@ def admin_callback(call):
             InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back")
         )
         bot.edit_message_text("🔧 **مدیریت کاربران**", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_add_vip":
         msg = bot.send_message(call.message.chat.id, "آیدی عددی کاربر را ارسال کنید:")
         bot.register_next_step_handler(msg, add_vip_step, call.message)
+
     elif call.data == "admin_remove_vip":
         msg = bot.send_message(call.message.chat.id, "آیدی عددی کاربر را ارسال کنید:")
         bot.register_next_step_handler(msg, remove_vip_step, call.message)
+
     elif call.data == "admin_ban_user":
         msg = bot.send_message(call.message.chat.id, "آیدی کاربر برای بن:")
         bot.register_next_step_handler(msg, ban_user_step, call.message)
+
     elif call.data == "admin_unban_user":
         msg = bot.send_message(call.message.chat.id, "آیدی کاربر برای رفع بن:")
         bot.register_next_step_handler(msg, unban_user_step, call.message)
+
     elif call.data == "admin_storage":
         used, count = get_storage_usage()
         text = f"💾 **فضای ذخیره‌سازی**\nفضای مصرفی: {used/1024/1024:.1f}MB\nتعداد فایل‌ها: {count}\n🗑️ پاکسازی فایل‌های قدیمی‌تر از ۱ روز"
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("🗑️ پاکسازی", callback_data="admin_clean_storage"), InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
         bot.edit_message_text(text, call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_clean_storage":
         deleted, size = clean_storage(keep_days=1)
         bot.answer_callback_query(call.id, f"{deleted} فایل حذف شد ({size/1024/1024:.1f}MB)")
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
     elif call.data == "admin_logs":
         log_text = "\n".join(admin_logs[-20:]) if admin_logs else "هیچ لاگی"
         markup = InlineKeyboardMarkup().add(InlineKeyboardButton("🔙 بازگشت", callback_data="admin_back"))
         bot.edit_message_text(f"📜 **لاگ‌های ادمین** (۲۰ مورد آخر)\n{log_text}", call.message.chat.id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+
     elif call.data == "admin_broadcast":
         msg = bot.send_message(call.message.chat.id, "📤 **پیام همگانی خود را وارد کنید:**")
         bot.register_next_step_handler(msg, broadcast_message, call.message)
+
     elif call.data == "admin_restart":
         bot.edit_message_text("🔄 در حال ریست...", call.message.chat.id, call.message.message_id)
         time.sleep(1)
         os._exit(0)
+
     elif call.data == "admin_back":
-        admin_panel(call.message)
+        show_admin_panel(call.message.chat.id)
+
+# ================= توابع کمکی ادمین =================
+def add_vip_step(message, orig_msg):
+    if str(message.from_user.id) not in [str(uid) for uid in ADMIN_IDS]: return
+    try:
+        uid = int(message.text.strip())
+        set_user_tier(uid, "vip")
+        bot.send_message(message.chat.id, f"✅ کاربر {uid} VIP شد.")
+        admin_logs.append(f"{datetime.now()} افزودن VIP به {uid}")
+    except:
+        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
+    show_admin_panel(orig_msg.chat.id)
+
+def remove_vip_step(message, orig_msg):
+    if str(message.from_user.id) not in [str(uid) for uid in ADMIN_IDS]: return
+    try:
+        uid = int(message.text.strip())
+        set_user_tier(uid, "normal")
+        bot.send_message(message.chat.id, f"✅ VIP کاربر {uid} حذف شد.")
+        admin_logs.append(f"{datetime.now()} حذف VIP از {uid}")
+    except:
+        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
+    show_admin_panel(orig_msg.chat.id)
+
+def ban_user_step(message, orig_msg):
+    if str(message.from_user.id) not in [str(uid) for uid in ADMIN_IDS]: return
+    try:
+        uid = int(message.text.strip())
+        set_banned(uid, True)
+        bot.send_message(message.chat.id, f"🚫 کاربر {uid} بن شد.")
+        admin_logs.append(f"{datetime.now()} بن کاربر {uid}")
+    except:
+        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
+    show_admin_panel(orig_msg.chat.id)
+
+def unban_user_step(message, orig_msg):
+    if str(message.from_user.id) not in [str(uid) for uid in ADMIN_IDS]: return
+    try:
+        uid = int(message.text.strip())
+        set_banned(uid, False)
+        bot.send_message(message.chat.id, f"✅ بن کاربر {uid} برداشته شد.")
+        admin_logs.append(f"{datetime.now()} رفع بن {uid}")
+    except:
+        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
+    show_admin_panel(orig_msg.chat.id)
 
 def broadcast_message(message, orig_msg):
-    if message.from_user.id != ADMIN_ID:
-        return
+    if str(message.from_user.id) not in [str(uid) for uid in ADMIN_IDS]: return
     text = message.text
     success = 0
     fail = 0
@@ -627,52 +614,9 @@ def broadcast_message(message, orig_msg):
             fail += 1
         time.sleep(0.05)
     bot.send_message(message.chat.id, f"✅ پیام به {success} کاربر ارسال شد.\n❌ {fail} کاربر ناموفق.")
-    admin_panel(orig_msg)
+    show_admin_panel(orig_msg.chat.id)
 
-def add_vip_step(message, orig_msg):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        uid = int(message.text.strip())
-        set_user_tier(uid, "vip")
-        bot.send_message(message.chat.id, f"✅ کاربر {uid} VIP شد.")
-        admin_logs.append(f"{datetime.now()} افزودن VIP به {uid}")
-    except:
-        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
-    admin_panel(orig_msg)
-
-def remove_vip_step(message, orig_msg):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        uid = int(message.text.strip())
-        set_user_tier(uid, "normal")
-        bot.send_message(message.chat.id, f"✅ VIP کاربر {uid} حذف شد.")
-        admin_logs.append(f"{datetime.now()} حذف VIP از {uid}")
-    except:
-        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
-    admin_panel(orig_msg)
-
-def ban_user_step(message, orig_msg):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        uid = int(message.text.strip())
-        set_banned(uid, True)
-        bot.send_message(message.chat.id, f"🚫 کاربر {uid} بن شد.")
-        admin_logs.append(f"{datetime.now()} بن کاربر {uid}")
-    except:
-        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
-    admin_panel(orig_msg)
-
-def unban_user_step(message, orig_msg):
-    if message.from_user.id != ADMIN_ID: return
-    try:
-        uid = int(message.text.strip())
-        set_banned(uid, False)
-        bot.send_message(message.chat.id, f"✅ بن کاربر {uid} برداشته شد.")
-        admin_logs.append(f"{datetime.now()} رفع بن {uid}")
-    except:
-        bot.send_message(message.chat.id, "❌ آیدی نامعتبر")
-    admin_panel(orig_msg)
-
+# ================= هندلر عضویت =================
 @bot.callback_query_handler(func=lambda call: call.data == "check_membership")
 def check_membership_callback(call):
     user_id = call.from_user.id
@@ -690,7 +634,7 @@ def check_membership_callback(call):
     else:
         bot.answer_callback_query(call.id, "هنوز عضو نشده‌اید!", show_alert=True)
 
-# ================= هندلر اصلی (دانلود خودکار بهترین کیفیت) =================
+# ================= هندلر اصلی دانلود =================
 @bot.message_handler(content_types=['text'])
 def handle(message):
     user_id = message.from_user.id
@@ -701,7 +645,7 @@ def handle(message):
         markup = InlineKeyboardMarkup()
         markup.add(InlineKeyboardButton("📢 عضویت در کانال", url=f"https://t.me/{CHANNEL_USERNAME[1:]}"))
         markup.add(InlineKeyboardButton("✅ عضویت پیدا کردم", callback_data="check_membership"))
-        bot.reply_to(message, f"🔒 ابتدا در کانال عضو شوید:\n{CHANNEL_USERNAME}", reply_markup=markup)
+        bot.reply_to(message, f"🔒 ابتدا عضو کانال شوید:\n{CHANNEL_USERNAME}", reply_markup=markup)
         return
 
     url = extract_url(message.text)
@@ -717,31 +661,7 @@ def handle(message):
 
     url = resolve_short_url(url)
     platform = detect_platform(url)
-
-    # بررسی کش
-    cached = get_from_cache(url)
-    if cached:
-        filepath = cached['filepath']
-        metadata = cached['metadata']
-        if os.path.exists(filepath):
-            increment_daily_usage(user_id)
-            remaining = get_remaining_limit(user_id)
-            caption = f"✅ **از حافظه کش ارسال شد!**\n📥 پلتفرم: {platform}\n📌 عنوان: {metadata.get('title', 'Unknown')}\n👤 آپلودر: {metadata.get('uploader', 'Unknown')}\n⏱️ مدت: {metadata.get('duration', 0)} ثانیه\n👍 لایک: {metadata.get('like_count', 0)}\n👁️ بازدید: {metadata.get('view_count', 0)}\n📊 حجم: {os.path.getsize(filepath)/1024/1024:.1f}MB\n📊 باقی‌مانده امروز: {remaining}"
-            with open(filepath, 'rb') as f:
-                bot.send_video(message.chat.id, f, caption=caption)
-            schedule_file_deletion(filepath)
-            return
-
-    # دانلود خودکار با بهترین کیفیت
     status_msg = bot.reply_to(message, f"🔍 **پلتفرم:** {platform}\n⚡ شروع دانلود بهترین کیفیت...", parse_mode="Markdown")
-
-    if user_id in active_downloads:
-        bot.send_message(message.chat.id, "⏳ در حال دانلود...")
-        return
-    if not check_daily_limit(user_id):
-        remaining = get_remaining_limit(user_id)
-        bot.send_message(message.chat.id, f"⚠️ محدودیت روزانه تمام شد! باقی‌مانده: {remaining}")
-        return
 
     stop_event = threading.Event()
     cancel_events[user_id] = stop_event
@@ -755,10 +675,11 @@ def handle(message):
                     bot.edit_message_text(msg, message.chat.id, status_msg.message_id, parse_mode="Markdown")
                 except:
                     pass
-            result = downloader.download_parallel(url)
+            result = downloader.download(url, progress_callback)
             if result and os.path.exists(result['file']):
                 file_size = result['size']
-                if file_size > settings['max_size_mb'] * 1024 * 1024:
+                max_size = settings.get('max_size_mb', 500) * 1024 * 1024
+                if file_size > max_size:
                     bot.send_message(message.chat.id, f"❌ حجم فایل بیشتر از {settings['max_size_mb']}MB است!")
                     os.remove(result['file'])
                     return
@@ -771,7 +692,6 @@ def handle(message):
                         bot.send_audio(message.chat.id, f, caption=caption)
                     else:
                         bot.send_video(message.chat.id, f, caption=caption)
-                add_to_cache(url, result['file'], metadata)
                 schedule_file_deletion(result['file'])
                 try:
                     bot.edit_message_text("✅ ارسال شد!", message.chat.id, status_msg.message_id)
@@ -812,7 +732,7 @@ def home():
     return "ربات دانلود فوق‌پیشرفته - نسخه ۲۰۲۶"
 
 if __name__ == "__main__":
-    print("🚀 ربات با دانلود خودکار بهترین کیفیت راه‌اندازی شد")
+    print("🚀 ربات با بهینه‌سازی‌های یوتیوب و پنل ادمین راه‌اندازی شد")
     bot.remove_webhook()
     time.sleep(1)
     bot.set_webhook(url=WEBHOOK_URL)
