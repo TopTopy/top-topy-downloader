@@ -18,7 +18,7 @@ import requests
 from urllib.parse import urlparse
 
 # ================= تنظیمات =================
-TOKEN = "8629099905:AAHYL2VGTqTIVCscKd7QJNAvY0gEbVEEeg4"
+TOKEN = "8629099905:AAEBpbyDcVI35-C3i0OKDnnXAq5ut0KtQ5w"
 ADMIN_IDS = [8226091292]  # لیست ادمین‌ها (می‌توانید چند تا اضافه کنید)
 CHANNEL_USERNAME = "@top_topy_downloader"
 MAX_FILE_SIZE = 500 * 1024 * 1024
