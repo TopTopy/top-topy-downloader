@@ -25,7 +25,7 @@ CHANNEL_USERNAME = "@top_topy_downloader"
 MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 LOGS_PATH = "logs"
-WEBHOOK_URL = "https://web-production-d8a05.up.railway.app/webhook"
+WEBHOOK_URL = "https://feisty-serenity.up.railway.app/webhook"
 PORT = int(os.environ.get("PORT", 8080))
 
 DAILY_LIMIT_NORMAL = 20
