@@ -11,7 +11,6 @@ import sys
 import glob
 from datetime import datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, request
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 import yt_dlp
@@ -25,8 +24,6 @@ CHANNEL_USERNAME = "@top_topy_downloader"
 MAX_FILE_SIZE = 500 * 1024 * 1024
 DOWNLOAD_PATH = "downloads"
 LOGS_PATH = "logs"
-WEBHOOK_URL = "https://feisty-serenity.up.railway.app/webhook"
-PORT = int(os.environ.get("PORT", 8080))
 
 DAILY_LIMIT_NORMAL = 20
 DAILY_LIMIT_VIP = 100
@@ -47,8 +44,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 bot = telebot.TeleBot(TOKEN)
-app = Flask(__name__)
-
 # ================= فایل ذخیره کاربران =================
 USERS_FILE = "users.json"
 SETTINGS_FILE = "settings.json"
@@ -719,21 +714,10 @@ def cancel_download(message):
     else:
         bot.reply_to(message, "ℹ️ هیچ دانلودی در حال انجام نیست.")
 
-# ================= وب هوک و اجرا =================
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    json_str = request.get_data().decode("utf-8")
-    update = telebot.types.Update.de_json(json_str)
-    bot.process_new_updates([update])
-    return "OK", 200
-
-@app.route("/")
-def home():
-    return "ربات دانلود فوق‌پیشرفته - نسخه ۲۰۲۶"
-
 if __name__ == "__main__":
-    print("🚀 ربات با بهینه‌سازی‌های یوتیوب و پنل ادمین راه‌اندازی شد")
+    print("🚀 ربات با حالت Polling راه‌اندازی شد")
     bot.remove_webhook()
     time.sleep(1)
-    bot.set_webhook(url=WEBHOOK_URL)
-    app.run(host="0.0.0.0", port=PORT)
+    # حذف خطوط webhook و Flask
+    print("✅ ربات در حال اجرا (Polling)...")
+    bot.infinity_polling(timeout=60, long_polling_timeout=60)
